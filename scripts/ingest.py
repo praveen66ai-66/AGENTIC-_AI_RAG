@@ -42,9 +42,9 @@ END_PAGE    = 1050   # last page of this batch (inclusive, covers end of book)
 
 FRONT_MATTER_PAGES  = {1, 2, 3, 4, 5}
 TABLE_CONTEXT_LINES = 8
-MIN_IMAGE_SIZE      = 200   # px — large diagrams/charts (both dims must exceed this)
-MIN_FORMULA_WIDTH   = 30    # px — formula images are wide but short
-MIN_FORMULA_HEIGHT  = 8     # px — minimum height for a formula image
+# No size threshold — save every image Docling finds.
+# Missing one real diagram means a full 4-hour re-ingest; capturing a tiny
+# logo is harmless (LLM returns a short description that never matches queries).
 
 # Section names that indicate exercise/Q&A content — tagged is_exercise=True
 # so they can be routed to a separate Qdrant collection and excluded from
@@ -116,15 +116,7 @@ def extract_elements(converter, pdf_path: Path, pages: list[int]) -> list[dict]:
                 image_path = ""
                 try:
                     image = item.get_image(doc)
-                    # Save large diagrams AND formula-sized landscape images.
-                    # Formulas are wide but short (e.g. 40x14px at 0.5x scale) —
-                    # the old 200px floor silently dropped them.
-                    is_diagram     = (image.width  > MIN_IMAGE_SIZE and
-                                      image.height > MIN_IMAGE_SIZE)
-                    is_formula_img = (image.width  >= MIN_FORMULA_WIDTH  and
-                                      image.height >= MIN_FORMULA_HEIGHT  and
-                                      image.width  >= 2 * image.height)
-                    if image and (is_diagram or is_formula_img):
+                    if image:
                         filename   = f"page{item_page}_img{pic_idx}.png"
                         saved_path = IMAGES_DIR / filename
                         image.save(saved_path)

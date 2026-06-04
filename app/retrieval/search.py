@@ -15,10 +15,33 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 load_dotenv()
 
-# The PDF has 16 pages of front matter (cover, TOC, preface) before page 1
-# of the printed book. All Qdrant payloads store PDF page numbers.
-# book_page = pdf_page - PDF_PAGE_OFFSET gives the number printed in the book.
+# ── Page number mapping ───────────────────────────────────────────────────────
+# build_page_map.py writes data/processed/page_map.json with the exact
+# {pdf_page: book_page} mapping extracted from the PDF headers.
+# Falls back to the static offset when the map is missing (e.g. before first run).
+
 _PDF_PAGE_OFFSET = int(os.getenv("PDF_PAGE_OFFSET", "16"))
+_PAGE_MAP: dict[int, int] = {}
+
+def _load_page_map() -> None:
+    global _PAGE_MAP
+    import json
+    from pathlib import Path
+    map_path = Path("data/processed/page_map.json")
+    if map_path.exists():
+        try:
+            raw      = json.loads(map_path.read_text(encoding="utf-8"))
+            _PAGE_MAP = {int(k): int(v) for k, v in raw.items()}
+            print(f"[search] Loaded page map: {len(_PAGE_MAP)} entries")
+        except Exception as e:
+            print(f"[search] Could not load page map: {e} — using offset fallback")
+
+def _to_book_page(pdf_page: int | None) -> int | None:
+    if pdf_page is None:
+        return None
+    return _PAGE_MAP.get(pdf_page, pdf_page - _PDF_PAGE_OFFSET)
+
+_load_page_map()
 
 _embed  = SentenceTransformer("BAAI/bge-base-en-v1.5")
 _sparse = SparseTextEmbedding(model_name="Qdrant/bm25")
@@ -69,7 +92,7 @@ def hybrid_search(query: str, collection: str, top_k: int = 5) -> list[dict]:
     results = []
     for r in points:
         pdf_page  = r.payload.get("page")
-        book_page = (pdf_page - _PDF_PAGE_OFFSET) if pdf_page else None
+        book_page = _to_book_page(pdf_page)
         results.append({
             "text":       r.payload.get("text", ""),
             "page":       book_page,   # printed book page shown in citations
