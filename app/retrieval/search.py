@@ -15,6 +15,11 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 load_dotenv()
 
+# The PDF has 16 pages of front matter (cover, TOC, preface) before page 1
+# of the printed book. All Qdrant payloads store PDF page numbers.
+# book_page = pdf_page - PDF_PAGE_OFFSET gives the number printed in the book.
+_PDF_PAGE_OFFSET = int(os.getenv("PDF_PAGE_OFFSET", "16"))
+
 _embed  = SentenceTransformer("BAAI/bge-base-en-v1.5")
 _sparse = SparseTextEmbedding(model_name="Qdrant/bm25")
 _qdrant = QdrantClient(
@@ -61,14 +66,17 @@ def hybrid_search(query: str, collection: str, top_k: int = 5) -> list[dict]:
         query=FusionQuery(fusion=Fusion.RRF),
         limit=top_k,
     )
-    return [
-        {
+    results = []
+    for r in points:
+        pdf_page  = r.payload.get("page")
+        book_page = (pdf_page - _PDF_PAGE_OFFSET) if pdf_page else None
+        results.append({
             "text":       r.payload.get("text", ""),
-            "page":       r.payload.get("page"),
+            "page":       book_page,   # printed book page shown in citations
+            "pdf_page":   pdf_page,    # raw PDF page kept for debugging
             "section":    r.payload.get("section", ""),
             "source":     r.payload.get("source", ""),
             "score":      round(r.score, 4),
             "collection": collection,
-        }
-        for r in points
-    ]
+        })
+    return results
