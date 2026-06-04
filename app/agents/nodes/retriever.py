@@ -49,9 +49,13 @@ def retriever_node(state: AgentState) -> dict:
     above = [c for c in reranked if c.get("rerank_score", 0.0) >= _RERANK_THRESHOLD]
     reranked = above if above else reranked[:1]
 
-    # Filter out chunks already shown earlier in this session (multi-turn dedup)
     all_chunks = reranked + structure
-    if prefix:
+
+    # Dedup only on the first pass (iteration==0).
+    # On re-entry (gap-based search, iteration>0) we skip dedup — the reasoner
+    # already said the first-pass chunks were insufficient, so filtering them
+    # again would remove exactly the chunks we most need to find.
+    if prefix and iteration == 0:
         all_chunks = session_mem.filter_new_chunks(prefix, all_chunks)
 
     # Assumption drift guard: gap-based re-entry returned nothing → fall back to

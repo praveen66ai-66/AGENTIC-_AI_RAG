@@ -22,6 +22,9 @@ system: |
   - Be strict: partial information that could lead to a wrong answer is NOT sufficient
   - Identify the exact gap if context is insufficient
   - Do not attempt to answer the question yourself
+  - A conceptual explanation that covers all components of a formula (numerator,
+    denominator, variables, logic) is SUFFICIENT even if algebraic notation is absent —
+    the book uses narrative exposition, not equation blocks
   </constraints>
 
   <output_format>
