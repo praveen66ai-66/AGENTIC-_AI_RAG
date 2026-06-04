@@ -31,14 +31,37 @@ MAX_OUTPUT = 4096
 
 def connect():
     import psycopg2
-    return psycopg2.connect(os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL"))
+    return psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST",     "localhost"),
+        port=int(os.getenv("POSTGRES_PORT", 5432)),
+        user=os.getenv("POSTGRES_USER",     "postgres"),
+        password=os.getenv("POSTGRES_PASSWORD", ""),
+        dbname=os.getenv("POSTGRES_DB",     "postgres"),
+    )
 
 
 def fetch_queries(tenant_id, user_id, limit):
     with connect() as conn:
         with conn.cursor() as cur:
+            # Migrate schema — safe to run on any existing table version
+            migrations = [
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS plan            JSONB   DEFAULT '[]'",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS confidence      FLOAT",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS duration_ms     FLOAT",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cache_hit       BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cache_type      TEXT",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS iteration_count INT     NOT NULL DEFAULT 0",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS token_usage     JSONB   DEFAULT '{}'",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS total_tokens    INT     DEFAULT 0",
+                "ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS trajectory_id   TEXT",
+            ]
+            for m in migrations:
+                cur.execute(m)
+            conn.commit()
+
             cur.execute("""
-                SELECT trajectory_id, query, answer, confidence, duration_ms,
+                SELECT query, confidence, duration_ms,
                        cache_hit, iteration_count, token_usage, total_tokens,
                        created_at
                 FROM   query_logs

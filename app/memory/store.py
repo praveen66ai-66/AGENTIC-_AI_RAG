@@ -165,9 +165,18 @@ def setup_tables() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_tenant_user  ON query_logs(tenant_id, user_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_session       ON query_logs(session_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_created       ON query_logs(created_at DESC);")
-            # Non-destructive: adds column if the table already exists without it
-            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS token_usage  JSONB DEFAULT '{}';")
-            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS total_tokens INT  DEFAULT 0;")
+            # Non-destructive migrations — safe to run on any existing schema version
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS plan            JSONB   DEFAULT '[]';")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS confidence      FLOAT;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS duration_ms     FLOAT;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cache_hit       BOOLEAN NOT NULL DEFAULT FALSE;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS cache_type      TEXT;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS iteration_count INT     NOT NULL DEFAULT 0;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS idempotency_key TEXT;")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS token_usage     JSONB   DEFAULT '{}';")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS total_tokens    INT     DEFAULT 0;")
+            # Unique index on idempotency_key (CREATE INDEX IF NOT EXISTS is idempotent)
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_ql_idem ON query_logs(idempotency_key) WHERE idempotency_key IS NOT NULL;")
 
 
 # ── Session registry ──────────────────────────────────────────────────────────
