@@ -30,11 +30,36 @@ def build_rag_graph() -> StateGraph:
 
     graph.add_edge("generator", END)
 
-    # MemorySaver checkpoints every node transition in memory.
-    # Pass config={"configurable": {"thread_id": session_id}} at invoke time
-    # to resume a conversation from where it left off.
     return graph.compile(checkpointer=MemorySaver())
 
 
-# Singleton — import this in API routes and stateful.py
+def build_pre_graph() -> StateGraph:
+    """
+    Planner → retriever → reasoner only — no generator.
+    Used by the streaming path: run retrieval first, then stream LLM tokens
+    separately so the user sees output as it is generated.
+    """
+    graph = StateGraph(AgentState)
+
+    graph.add_node("planner",   planner_node)
+    graph.add_node("retriever", retriever_node)
+    graph.add_node("reasoner",  reasoner_node)
+
+    graph.set_entry_point("planner")
+
+    graph.add_edge("planner", "retriever")
+    graph.add_edge("retriever", "reasoner")
+
+    # When context is sufficient or iteration cap hit → END (generator runs separately)
+    graph.add_conditional_edges(
+        "reasoner",
+        route_after_reasoner,
+        {"retrieve": "retriever", "generate": END},
+    )
+
+    return graph.compile(checkpointer=MemorySaver())
+
+
+# Singletons
 rag_graph = build_rag_graph()
+pre_graph = build_pre_graph()

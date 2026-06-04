@@ -14,6 +14,43 @@ def _split_prefix(prefix: str) -> tuple[str, str, str]:
     return (parts[0], parts[1], parts[2]) if len(parts) == 3 else ("", "", "")
 
 
+def stream_tokens(state: dict):
+    """
+    Stream LLM tokens for the streaming API path.
+    Yields raw string fragments as the LLM generates them.
+    Does NOT write to memory — stateful.stream() handles that after collecting
+    the full answer.
+    """
+    chunks             = state.get("retrieved_chunks") or []
+    context_sufficient = state.get("context_sufficient", True)
+    retrieval_gap      = state.get("retrieval_gap", "")
+    sid                = state.get("session_id", "")
+
+    if not chunks:
+        yield (
+            "I could not find relevant information in the textbook to answer this question. "
+            "Please try rephrasing, or check that the topic is covered in the corporate finance material."
+        )
+        return
+
+    prompt  = load_prompt("generator")
+    history = session_mem.get_history(sid, *_split_prefix(sid)) if sid else []
+
+    system_text = prompt["system"].format(
+        retrieved_chunks=format_chunks(chunks),
+        session_history=format_history(history),
+    )
+
+    for chunk in get_llm().stream([
+        SystemMessage(content=system_text),
+        HumanMessage(content=state["question"]),
+    ]):
+        yield chunk.content
+
+    if not context_sufficient and retrieval_gap:
+        yield f"\n\n> **Note:** The retrieved context may not fully cover this question. Missing: {retrieval_gap}"
+
+
 def generator_node(state: AgentState) -> dict:
     t0            = time.time()
     trajectory_id = state.get("trajectory_id", "")

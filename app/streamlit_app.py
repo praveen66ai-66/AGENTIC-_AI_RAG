@@ -5,12 +5,54 @@ Usage:
     uv run streamlit run app/streamlit_app.py
 """
 
+import json
 import uuid
 import requests
 import streamlit as st
 
 API_BASE = "http://localhost:8000/api/v1"
 HEALTH   = "http://localhost:8000/health"
+
+
+def _stream_agent(question: str, headers: dict):
+    """
+    Generator consumed by st.write_stream().
+    Connects to /agent/stream, yields token strings for live rendering,
+    and stashes metadata + sources in session_state for display after streaming.
+    """
+    st.session_state._stream_meta = {}
+    st.session_state._stream_done = {}
+
+    with requests.post(
+        f"{API_BASE}/agent/stream",
+        json={"question": question},
+        headers=headers,
+        stream=True,
+        timeout=180,
+    ) as resp:
+        resp.raise_for_status()
+        for raw in resp.iter_lines():
+            if not raw:
+                continue
+            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            if not line.startswith("data: "):
+                continue
+            try:
+                event = json.loads(line[6:])
+            except Exception:
+                continue
+
+            t = event.get("type")
+            if t == "metadata":
+                st.session_state._stream_meta = event
+            elif t == "token":
+                yield event.get("content", "")
+            elif t == "done":
+                st.session_state._stream_done = event
+                break
+            elif t == "error":
+                yield f"\n\n⚠️ {event.get('detail', 'Unknown error')}"
+                break
 
 st.set_page_config(
     page_title="FinanceRAG · AI Research Assistant",
@@ -341,76 +383,69 @@ if question:
         st.markdown(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking… this may take 10–20 seconds"):
-            try:
-                resp = requests.post(
-                    f"{API_BASE}/agent",
-                    json={"question": question},
-                    headers={
-                        "X-Tenant-Id":  tenant_id,
-                        "X-User-Id":    user_id,
-                        "X-Session-Id": st.session_state.session_id,
-                    },
-                    timeout=120,
-                )
+        try:
+            headers = {
+                "X-Tenant-Id":  tenant_id,
+                "X-User-Id":    user_id,
+                "X-Session-Id": st.session_state.session_id,
+            }
 
-                if resp.status_code == 400:
-                    st.warning(f"⚠️ {resp.json().get('detail', 'Request blocked.')}")
-                else:
-                    data       = resp.json()
-                    answer     = data.get("answer", "")
-                    sources    = data.get("sources", [])
-                    confidence = data.get("confidence", 0.0)
-                    plan       = data.get("plan", [])
-                    iterations = data.get("iteration_count", 0)
-                    duration   = data.get("duration_ms", 0)
-                    cache_hit  = data.get("cache_hit", False)
+            # Stream tokens live — user sees answer appear word by word
+            answer = st.write_stream(_stream_agent(question, headers))
 
-                    # Update session stats
-                    st.session_state.last_confidence  = confidence
-                    st.session_state.last_duration_ms = duration
-                    if cache_hit:
-                        st.session_state.cache_hits += 1
+            # After streaming completes, read metadata stashed by the generator
+            meta = st.session_state.get("_stream_meta", {})
+            done = st.session_state.get("_stream_done", {})
 
-                    # Confidence badge
-                    conf_pct  = int(confidence * 100)
-                    conf_col  = "#2e7d32" if confidence >= 0.7 else "#e65100" if confidence >= 0.4 else "#c62828"
-                    cache_tag = ' <span style="background:#e3f2fd;border:1px solid #1976d2;border-radius:10px;padding:2px 10px;font-size:11px;color:#1565c0;">⚡ cached</span>' if cache_hit else ""
-                    st.markdown(
-                        f'<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">'
-                        f'<span style="font-size:12px;color:#4a7fa8;">Confidence</span>'
-                        f'<span style="font-size:15px;font-weight:700;color:{conf_col};">{conf_pct}%</span>'
-                        f'<span style="font-size:12px;color:#4a7fa8;">· {iterations} iteration(s) · {duration:.0f} ms</span>'
-                        f'{cache_tag}</div>',
-                        unsafe_allow_html=True,
-                    )
+            confidence = done.get("confidence", meta.get("confidence", 0.0))
+            sources    = done.get("sources", [])
+            plan       = meta.get("plan", [])
+            duration   = done.get("duration_ms", 0)
+            cache_hit  = done.get("cache_hit", meta.get("cache_hit", False))
+            cache_type = done.get("cache_type", meta.get("cache_type"))
 
-                    # Answer
-                    st.markdown(answer)
+            # Update session stats
+            st.session_state.last_confidence  = confidence
+            st.session_state.last_duration_ms = duration
+            if cache_hit:
+                st.session_state.cache_hits += 1
 
-                    # Plan expander
-                    if plan:
-                        with st.expander(f"🧠 Retrieval plan ({len(plan)} sub-tasks)", expanded=False):
-                            for i, task in enumerate(plan, 1):
-                                st.markdown(f"**{i}.** {task}")
+            # Confidence badge
+            conf_pct  = int(confidence * 100)
+            conf_col  = "#2e7d32" if confidence >= 0.7 else "#e65100" if confidence >= 0.4 else "#c62828"
+            cache_tag = ' <span style="background:#e3f2fd;border:1px solid #1976d2;border-radius:10px;padding:2px 10px;font-size:11px;color:#1565c0;">⚡ cached</span>' if cache_hit else ""
+            st.markdown(
+                f'<div style="display:flex;align-items:center;gap:12px;margin-top:8px;margin-bottom:4px;">'
+                f'<span style="font-size:12px;color:#4a7fa8;">Confidence</span>'
+                f'<span style="font-size:15px;font-weight:700;color:{conf_col};">{conf_pct}%</span>'
+                f'<span style="font-size:12px;color:#4a7fa8;">· {duration:.0f} ms</span>'
+                f'{cache_tag}</div>',
+                unsafe_allow_html=True,
+            )
 
-                    # Sources
-                    if sources:
-                        cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
-                        for i, s in enumerate(sources, 1):
-                            section = (s.get("section") or "—")[:60]
-                            score   = s.get("score", 0.0)
-                            cite_html += f"""
+            # Plan expander
+            if plan:
+                with st.expander(f"🧠 Retrieval plan ({len(plan)} sub-tasks)", expanded=False):
+                    for i, task in enumerate(plan, 1):
+                        st.markdown(f"**{i}.** {task}")
+
+            # Sources
+            if sources:
+                cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
+                for i, s in enumerate(sources, 1):
+                    section = (s.get("section") or "—")[:60]
+                    score   = s.get("score", 0.0)
+                    cite_html += f"""
 <div class="cite-item">
     <span class="cite-num">[{i}]</span>
     <span class="cite-info">Page {s.get('page','?')} &nbsp;·&nbsp; {section} &nbsp;·&nbsp; score {score:.3f}</span>
 </div>"""
-                        cite_html += "</div>"
-                        st.markdown(cite_html, unsafe_allow_html=True)
+                cite_html += "</div>"
+                st.markdown(cite_html, unsafe_allow_html=True)
 
-                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-            except requests.exceptions.ConnectionError:
-                st.error("⚠️ API server not reachable. Run: `uv run uvicorn app.main_api:app`")
-            except Exception as e:
-                st.error(f"Error: {e}")
+        except requests.exceptions.ConnectionError:
+            st.error("⚠️ API server not reachable. Run: `uv run uvicorn app.main_api:app`")
+        except Exception as e:
+            st.error(f"Error: {e}")
