@@ -9,6 +9,19 @@ from app.memory import session as session_mem
 from app.observability import splunk
 
 
+def _strip_llm_scaffolding(text: str) -> str:
+    """
+    Remove ## Answer / ## Sources / ## Confidence sections that older prompt
+    versions asked the LLM to output. We build those ourselves in the UI.
+    """
+    import re
+    # Drop everything from ## Sources or ## Confidence onward
+    text = re.sub(r'\n##\s+(Sources|Confidence|Source).*', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Strip a leading "## Answer" header if present
+    text = re.sub(r'^##\s+Answer\s*\n', '', text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def _split_prefix(prefix: str) -> tuple[str, str, str]:
     parts = prefix.split(":", 2)
     return (parts[0], parts[1], parts[2]) if len(parts) == 3 else ("", "", "")
@@ -98,7 +111,7 @@ def generator_node(state: AgentState) -> dict:
             HumanMessage(content=state["question"]),
         ])
         _llm_ms = round((time.time() - _t) * 1000, 2)
-        answer  = response.content.strip()
+        answer  = _strip_llm_scaffolding(response.content.strip())
         tokens  = get_tokens(response)
 
         if not context_sufficient and retrieval_gap:

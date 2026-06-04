@@ -345,10 +345,18 @@ def stream(
            "cache_hit": False, "cache_type": None}
 
     # ── Phase 2: stream generator tokens ─────────────────────────────────────
+    from app.agents.nodes.generator import _strip_llm_scaffolding
     full_answer = ""
     for token in stream_tokens(mid_state):
         full_answer += token
         yield {"type": "token", "content": token}
+
+    # Strip ## Sources / ## Confidence scaffolding the LLM may have output
+    cleaned = _strip_llm_scaffolding(full_answer)
+    if cleaned != full_answer:
+        # Send a correction token that replaces the displayed text
+        yield {"type": "replace", "content": cleaned}
+        full_answer = cleaned
 
     # Output guardrail on completed answer
     chunks = mid_state.get("retrieved_chunks") or []

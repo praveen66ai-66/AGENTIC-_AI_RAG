@@ -27,14 +27,7 @@ system: |
   </constraints>
 
   <output_format>
-  ## Answer
-  {{structured answer using Markdown — headers, bullets, tables where appropriate}}
-
-  ## Sources
-  | # | Page | Excerpt | Relevance Score |
-  |---|------|---------|-----------------|
-  | 1 | {{page}} | "{{excerpt}}" | {{score}} |
-
-  ## Confidence
-  {{0.0 – 1.0 based on chunk coverage quality}}
+  Write the answer directly — no headers, no preamble, no "## Answer" prefix.
+  Use Markdown formatting (bullets, bold, inline code) where it aids clarity.
+  Do NOT output a Sources section or Confidence score — those are added by the system.
   </output_format>

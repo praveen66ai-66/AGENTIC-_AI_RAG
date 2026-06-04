@@ -21,8 +21,9 @@ def _stream_agent(question: str, headers: dict):
     Connects to /agent/stream, yields token strings for live rendering,
     and stashes metadata + sources in session_state for display after streaming.
     """
-    st.session_state._stream_meta = {}
-    st.session_state._stream_done = {}
+    st.session_state._stream_meta  = {}
+    st.session_state._stream_done  = {}
+    st.session_state._stream_clean = None
 
     with requests.post(
         f"{API_BASE}/agent/stream",
@@ -48,6 +49,9 @@ def _stream_agent(question: str, headers: dict):
                 st.session_state._stream_meta = event
             elif t == "token":
                 yield event.get("content", "")
+            elif t == "replace":
+                # LLM output had scaffolding stripped — store clean version
+                st.session_state._stream_clean = event.get("content", "")
             elif t == "done":
                 st.session_state._stream_done = event
                 break
@@ -515,7 +519,8 @@ if question:
                             unsafe_allow_html=True,
                         )
 
-            st.session_state.chat_history.append({"role": "assistant", "content": answer})
+            clean = st.session_state.get("_stream_clean") or answer
+            st.session_state.chat_history.append({"role": "assistant", "content": clean})
 
         except requests.exceptions.ConnectionError:
             st.error("⚠️ API server not reachable. Run: `uv run uvicorn app.main_api:app`")
