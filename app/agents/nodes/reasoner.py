@@ -44,32 +44,41 @@ def reasoner_node(state: AgentState) -> dict:
         retrieved_chunks=format_chunks(chunks),
     )
 
+    _t = time.time()
     response = get_llm().invoke([SystemMessage(content=system_text)])
-    parsed   = parse_json(response.content)
+    _llm_ms  = round((time.time() - _t) * 1000, 2)
 
+    parsed             = parse_json(response.content)
     context_sufficient = bool(parsed.get("context_sufficient", False))
     confidence         = float(parsed.get("confidence", 0.0))
     tokens             = get_tokens(response)
+    _total_ms          = round((time.time() - t0) * 1000, 2)
 
     splunk.node_step(
         node="reasoner", phase="exit",
         trajectory_id=trajectory_id, session_id=session_id,
         iteration_count=iteration,
-        duration_ms=round((time.time() - t0) * 1000, 2),
+        duration_ms=_total_ms,
         context_sufficient=context_sufficient,
         confidence=confidence,
         tokens_in=tokens.get("in", 0),
         tokens_out=tokens.get("out", 0),
         tokens_total=tokens.get("total", 0),
+        llm_ms=_llm_ms,
     )
 
     stage_tokens = dict(state.get("stage_tokens") or {})
     key = f"reasoner_{iteration}" if iteration > 1 else "reasoner"
     stage_tokens[key] = tokens
 
+    suffix = f"_{iteration}" if iteration > 1 else ""
     return {
         "context_sufficient": context_sufficient,
         "retrieval_gap":      str(parsed.get("retrieval_gap") or ""),
         "confidence":         confidence,
         "stage_tokens":       stage_tokens,
+        "node_timings":       {f"reasoner{suffix}": {
+            "llm_ms":   _llm_ms,
+            "total_ms": _total_ms,
+        }},
     }

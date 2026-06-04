@@ -456,6 +456,30 @@ if question:
                     for i, task in enumerate(plan, 1):
                         st.markdown(f"**{i}.** {task}")
 
+            # Latency breakdown
+            trace = done.get("latency_trace", {})
+            if trace:
+                total_ms = trace.get("_total_ms", duration) or duration
+                with st.expander(f"⏱ Latency breakdown — {total_ms:.0f} ms total", expanded=False):
+                    rows = []
+                    order = ["_pipeline", "planner", "retriever", "retriever_1",
+                             "reasoner", "reasoner_1", "generator"]
+                    for key in order:
+                        if key not in trace:
+                            continue
+                        val = trace[key]
+                        if key == "_pipeline":
+                            for sub, ms in val.items():
+                                pct = ms / total_ms * 100 if total_ms else 0
+                                rows.append({"Step": sub.replace("_ms",""), "ms": f"{ms:.1f}", "%": f"{pct:.1f}%"})
+                        elif isinstance(val, dict):
+                            for sub, ms in val.items():
+                                pct = ms / total_ms * 100 if total_ms else 0
+                                label = f"{key}.{sub.replace('_ms','')}"
+                                rows.append({"Step": label, "ms": f"{ms:.1f}", "%": f"{pct:.1f}%"})
+                    if rows:
+                        st.table(rows)
+
             # Sources
             if sources:
                 cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'

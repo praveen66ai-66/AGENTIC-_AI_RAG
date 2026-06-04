@@ -2,6 +2,11 @@ from typing import Annotated, TypedDict
 from langgraph.graph.message import add_messages
 
 
+def _merge_timings(a: dict, b: dict) -> dict:
+    """Merge timing dicts from different nodes — each node adds its own key."""
+    return {**a, **b}
+
+
 class AgentState(TypedDict):
     # Conversation
     messages: Annotated[list, add_messages]
@@ -28,3 +33,4 @@ class AgentState(TypedDict):
     trajectory_id: str
     retrieval_empty: bool     # True when retriever found 0 chunks after all filtering
     stage_tokens: dict        # {"planner": {"in":N,"out":M}, "reasoner": {...}, "generator": {...}}
+    node_timings: Annotated[dict, _merge_timings]  # sub-op ms: {"planner": {...}, "retriever": {...}}

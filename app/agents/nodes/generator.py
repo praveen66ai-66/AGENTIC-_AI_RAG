@@ -64,6 +64,12 @@ def generator_node(state: AgentState) -> dict:
     context_sufficient = state.get("context_sufficient", True)
     retrieval_gap      = state.get("retrieval_gap", "")
     guard_blocked      = False
+    # Timing defaults (overwritten in else branch if LLM is called)
+    _redis_history_ms = 0.0
+    _llm_ms           = 0.0
+    _guard_ms         = 0.0
+    _redis_append_ms  = 0.0
+    tokens            = {}
 
     # Premature abandonment guard: when retrieval returned nothing at all, skip
     # the LLM entirely — generating from an empty context produces hallucination.
@@ -75,74 +81,77 @@ def generator_node(state: AgentState) -> dict:
         confidence = 0.0
         sources    = []
     else:
-        prompt  = load_prompt("generator")
+        prompt = load_prompt("generator")
+
+        _t = time.time()
         history = session_mem.get_history(sid, *_split_prefix(sid)) if sid else []
+        _redis_history_ms = round((time.time() - _t) * 1000, 2)
 
         system_text = prompt["system"].format(
             retrieved_chunks=format_chunks(chunks),
             session_history=format_history(history),
         )
 
+        _t = time.time()
         response = get_llm().invoke([
             SystemMessage(content=system_text),
             HumanMessage(content=state["question"]),
         ])
-        answer = response.content.strip()
-        tokens = get_tokens(response)
+        _llm_ms = round((time.time() - _t) * 1000, 2)
+        answer  = response.content.strip()
+        tokens  = get_tokens(response)
 
-        # Premature abandonment guard: when the iteration cap fired before the
-        # reasoner was satisfied, append an explicit gap caveat so the user knows
-        # the answer may be incomplete rather than silently receiving a partial response.
         if not context_sufficient and retrieval_gap:
             answer += f"\n\n> **Note:** The retrieved context may not fully cover this question. Missing: {retrieval_gap}"
 
-        # Output guardrail — appends a warning note rather than hard-blocking
+        _t = time.time()
         guard = output_guard_check(answer, chunks)
+        _guard_ms = round((time.time() - _t) * 1000, 2)
+
         guard_blocked = guard.blocked
         if guard.blocked:
             answer += f"\n\n> **Quality note:** {guard.reason}"
             splunk.security_event(
-                event_type="output_guard_block",
-                guard_type="output",
-                reason=guard.reason,
-                trajectory_id=trajectory_id,
-                session_id=sid,
+                event_type="output_guard_block", guard_type="output",
+                reason=guard.reason, trajectory_id=trajectory_id, session_id=sid,
             )
 
-        # Cap confidence when context was not fully sufficient (forced generate)
         raw_confidence = state.get("confidence", 0.5)
         confidence = min(raw_confidence, 0.4) if not context_sufficient else raw_confidence
 
         sources = [
-            {
-                "page":    c.get("page"),
-                "section": c.get("section", ""),
-                "source":  c.get("source", ""),
-                "score":   c.get("score", 0.0),
-            }
+            {"page": c.get("page"), "section": c.get("section", ""),
+             "source": c.get("source", ""), "score": c.get("score", 0.0)}
             for c in chunks[:5]
         ]
 
-    # Persist exchange — msg_id ties each message to this trajectory run
-    # so a retried generator call never duplicates history entries
+    # Persist exchange
+    _t = time.time()
     if sid:
         session_mem.append_message(sid, "user",      state["question"], msg_id=f"{trajectory_id}:user")
         session_mem.append_message(sid, "assistant", answer,            msg_id=f"{trajectory_id}:asst")
+    _redis_append_ms = round((time.time() - _t) * 1000, 2)
 
     stage_tokens = dict(state.get("stage_tokens") or {})
     stage_tokens["generator"] = tokens
+
+    _total_ms = round((time.time() - t0) * 1000, 2)
 
     splunk.node_step(
         node="generator", phase="exit",
         trajectory_id=trajectory_id, session_id=sid,
         iteration_count=iteration,
-        duration_ms=round((time.time() - t0) * 1000, 2),
+        duration_ms=_total_ms,
         answer_length=len(answer),
         source_count=len(sources),
         guard_blocked=guard_blocked,
         tokens_in=tokens.get("in", 0),
         tokens_out=tokens.get("out", 0),
         tokens_total=tokens.get("total", 0),
+        redis_history_ms=_redis_history_ms,
+        llm_ms=_llm_ms,
+        guard_ms=_guard_ms,
+        redis_append_ms=_redis_append_ms,
     )
 
     return {
@@ -150,4 +159,11 @@ def generator_node(state: AgentState) -> dict:
         "sources":      sources,
         "confidence":   confidence,
         "stage_tokens": stage_tokens,
+        "node_timings": {"generator": {
+            "redis_history_ms": _redis_history_ms,
+            "llm_ms":           _llm_ms,
+            "output_guard_ms":  _guard_ms,
+            "redis_append_ms":  _redis_append_ms,
+            "total_ms":         _total_ms,
+        }},
     }

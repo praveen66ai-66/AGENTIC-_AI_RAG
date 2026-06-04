@@ -74,12 +74,19 @@ def run(
         return result
 
     # ── 2. Init working memory + session registry ─────────────────────────────
+    _t = time.time()
     session_mem.init_meta(prefix, tenant_id, user_id, session_id)
     session_mem.bump_query_count(prefix, request_id=idempotency_key)
+    _outer_timings = {"redis_session_init_ms": round((time.time() - _t) * 1000, 2)}
+
+    _t = time.time()
     store.upsert_session(tenant_id, user_id, session_id)
+    _outer_timings["pg_upsert_session_ms"] = round((time.time() - _t) * 1000, 2)
 
     # ── 3. Semantic cache check ───────────────────────────────────────────────
+    _t = time.time()
     cached = semantic_cache.check(tenant_id, user_id, question)
+    _outer_timings["redis_cache_check_ms"] = round((time.time() - _t) * 1000, 2)
     if cached:
         answer     = cached["answer"]
         confidence = cached["confidence"]
@@ -154,6 +161,7 @@ def run(
         "trajectory_id":      trajectory_id,
         "retrieval_empty":    False,
         "stage_tokens":       {},
+        "node_timings":       {},
     }
 
     config      = {"configurable": {"thread_id": session_id}}
@@ -170,16 +178,14 @@ def run(
     iteration_count = final_state.get("iteration_count", 0)
     sources         = final_state.get("sources", [])
     stage_tokens    = final_state.get("stage_tokens", {})
+    node_timings    = final_state.get("node_timings", {})
     duration        = round((time.time() - started_at) * 1000, 2)
 
-    # Aggregate total tokens across all stages
     total_tokens_used = sum(v.get("total", 0) for v in stage_tokens.values() if isinstance(v, dict))
-
-    citation_summary = ", ".join(
-        f"p{s.get('page')} {s.get('section','')}" for s in sources[:3]
-    )
+    citation_summary  = ", ".join(f"p{s.get('page')} {s.get('section','')}" for s in sources[:3])
 
     # ── 5. Episodic memory — both turns ──────────────────────────────────────
+    _t = time.time()
     store.log_turn(
         tenant_id=tenant_id, user_id=user_id, session_id=session_id,
         trajectory_id=trajectory_id, role="user", content=question,
@@ -191,20 +197,20 @@ def run(
         idempotency_key=f"{idempotency_key}:asst",
         sources=sources, confidence=confidence,
     )
+    _outer_timings["pg_log_turns_ms"] = round((time.time() - _t) * 1000, 2)
 
-    # ── 6. Semantic memory — topic extracted from question ────────────────────
+    # ── 6. Semantic memory ────────────────────────────────────────────────────
     topic   = _extract_topic(question)
     fact_id = hashlib.md5(f"{tenant_id}:{user_id}:{topic}".encode()).hexdigest()
     store.store_semantic_fact(
         tenant_id=tenant_id, user_id=user_id,
-        fact_type="topic", subject=topic,
-        content=question,
-        source_session=session_id,
-        confidence=confidence,
+        fact_type="topic", subject=topic, content=question,
+        source_session=session_id, confidence=confidence,
         idempotency_key=f"topic:{fact_id}",
     )
 
     # ── 7. Audit log ──────────────────────────────────────────────────────────
+    _t = time.time()
     store.log_query(
         tenant_id=tenant_id, user_id=user_id, session_id=session_id,
         trajectory_id=trajectory_id, query=question,
@@ -214,10 +220,16 @@ def run(
         confidence=confidence, cache_hit=False,
         token_usage=stage_tokens, total_tokens=total_tokens_used,
     )
+    _outer_timings["pg_log_query_ms"] = round((time.time() - _t) * 1000, 2)
 
-    # ── 8. Semantic answer cache — skip LLM next time ─────────────────────────
+    # ── 8. Semantic cache store ───────────────────────────────────────────────
+    _t = time.time()
     if answer and confidence >= 0.4:
         semantic_cache.store(tenant_id, user_id, question, answer, confidence)
+    _outer_timings["redis_cache_store_ms"] = round((time.time() - _t) * 1000, 2)
+
+    # Merge outer timings with per-node timings from the graph
+    latency_trace = {"_pipeline": _outer_timings, **node_timings, "_total_ms": duration}
 
     result = {
         "answer":             answer,
@@ -235,6 +247,7 @@ def run(
         "duration_ms":        duration,
         "token_usage":        stage_tokens,
         "total_tokens":       total_tokens_used,
+        "latency_trace":      latency_trace,
     }
     splunk.rag_query(
         tenant_id=tenant_id, user_id=user_id,
@@ -379,11 +392,14 @@ def stream(
                      iteration_count=mid_state.get("iteration_count", 0),
                      duration_ms=duration, source_count=len(sources))
 
-    total_tok = sum(v.get("total", 0) for v in mid_state.get("stage_tokens", {}).values() if isinstance(v, dict))
+    total_tok    = sum(v.get("total", 0) for v in mid_state.get("stage_tokens", {}).values() if isinstance(v, dict))
+    node_t       = mid_state.get("node_timings", {})
+    lat_trace    = {"_pipeline": _outer_timings if "_outer_timings" in dir() else {}, **node_t, "_total_ms": duration}
     yield {"type": "done", "sources": sources, "confidence": confidence,
            "duration_ms": duration, "cache_hit": False,
-           "token_usage": mid_state.get("stage_tokens", {}),
-           "total_tokens": total_tok}
+           "token_usage":    mid_state.get("stage_tokens", {}),
+           "total_tokens":   total_tok,
+           "latency_trace":  lat_trace}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -29,39 +29,36 @@ def retriever_node(state: AgentState) -> dict:
     seen:       set[str]   = set()
     candidates: list[dict] = []
 
+    _t = time.time()
     for query in queries:
         for chunk in hybrid_search(query, "finance_content", top_k=_FETCH_K):
             if chunk["text"] not in seen:
                 seen.add(chunk["text"])
                 candidates.append(chunk)
-
-    # Structure chunks for section context (first query only, not reranked)
     structure: list[dict] = []
     for chunk in hybrid_search(queries[0], "finance_structure", top_k=2):
         if chunk["text"] not in seen:
             seen.add(chunk["text"])
             structure.append(chunk)
+    _qdrant_ms = round((time.time() - _t) * 1000, 2)
 
-    # Cross-encoder rerank content candidates
+    _t = time.time()
     reranked = rerank(state["question"], candidates, top_k=_RERANK_K)
+    _rerank_ms = round((time.time() - _t) * 1000, 2)
 
-    # Drop low-confidence chunks — keep at least 1 so the pipeline never stalls
-    above = [c for c in reranked if c.get("rerank_score", 0.0) >= _RERANK_THRESHOLD]
+    above    = [c for c in reranked if c.get("rerank_score", 0.0) >= _RERANK_THRESHOLD]
     reranked = above if above else reranked[:1]
-
     all_chunks = reranked + structure
 
-    # Dedup only on the first pass (iteration==0).
-    # On re-entry (gap-based search, iteration>0) we skip dedup — the reasoner
-    # already said the first-pass chunks were insufficient, so filtering them
-    # again would remove exactly the chunks we most need to find.
+    _t = time.time()
     if prefix and iteration == 0:
         all_chunks = session_mem.filter_new_chunks(prefix, all_chunks)
+    _redis_dedup_ms = round((time.time() - _t) * 1000, 2)
 
-    # Assumption drift guard: gap-based re-entry returned nothing → fall back to
-    # the original question so the generator has something to work with rather
-    # than proceeding on an invalid "we have context" assumption.
+    # Assumption drift guard
+    _fallback_ms = 0.0
     if not all_chunks and gap:
+        _t = time.time()
         fallback: list[dict] = []
         for chunk in hybrid_search(state["question"], "finance_content", top_k=_FETCH_K):
             if chunk["text"] not in seen:
@@ -70,22 +67,34 @@ def retriever_node(state: AgentState) -> dict:
         reranked_fb = rerank(state["question"], fallback, top_k=_RERANK_K)
         if prefix:
             reranked_fb = session_mem.filter_new_chunks(prefix, reranked_fb)
-        all_chunks = reranked_fb
+        all_chunks   = reranked_fb
+        _fallback_ms = round((time.time() - _t) * 1000, 2)
 
     retrieval_empty = len(all_chunks) == 0
+    new_iteration   = iteration + 1
+    _total_ms       = round((time.time() - t0) * 1000, 2)
 
-    new_iteration = iteration + 1
     splunk.node_step(
         node="retriever", phase="exit",
         trajectory_id=trajectory_id, session_id=state.get("session_id", ""),
         iteration_count=new_iteration,
-        duration_ms=round((time.time() - t0) * 1000, 2),
+        duration_ms=_total_ms,
         chunk_count=len(all_chunks),
         retrieval_empty=retrieval_empty,
+        qdrant_ms=_qdrant_ms, rerank_ms=_rerank_ms,
+        redis_dedup_ms=_redis_dedup_ms,
     )
 
+    suffix = f"_{iteration}" if iteration > 0 else ""
     return {
         "retrieved_chunks": all_chunks,
         "iteration_count":  new_iteration,
         "retrieval_empty":  retrieval_empty,
+        "node_timings": {f"retriever{suffix}": {
+            "qdrant_ms":      _qdrant_ms,
+            "rerank_ms":      _rerank_ms,
+            "redis_dedup_ms": _redis_dedup_ms,
+            "fallback_ms":    _fallback_ms,
+            "total_ms":       _total_ms,
+        }},
     }
