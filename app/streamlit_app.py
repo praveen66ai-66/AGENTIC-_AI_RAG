@@ -6,6 +6,7 @@ Usage:
 """
 
 import json
+import os
 import uuid
 import requests
 import streamlit as st
@@ -276,7 +277,9 @@ if "chat_history"     not in st.session_state: st.session_state.chat_history    
 if "query_count"      not in st.session_state: st.session_state.query_count      = 0
 if "cache_hits"       not in st.session_state: st.session_state.cache_hits       = 0
 if "last_confidence"  not in st.session_state: st.session_state.last_confidence  = None
-if "last_duration_ms" not in st.session_state: st.session_state.last_duration_ms = None
+if "last_duration_ms"   not in st.session_state: st.session_state.last_duration_ms   = None
+if "last_token_usage"  not in st.session_state: st.session_state.last_token_usage  = {}
+if "last_total_tokens" not in st.session_state: st.session_state.last_total_tokens  = 0
 
 # ── Health check ──────────────────────────────────────────────────────────────
 health = {}
@@ -322,16 +325,21 @@ with st.sidebar:
         st.session_state.chat_history     = []
         st.session_state.query_count      = 0
         st.session_state.cache_hits       = 0
-        st.session_state.last_confidence  = None
-        st.session_state.last_duration_ms = None
+        st.session_state.last_confidence   = None
+        st.session_state.last_duration_ms  = None
+        st.session_state.last_token_usage  = {}
+        st.session_state.last_total_tokens = 0
         st.rerun()
 
     st.markdown("---")
 
     # Session stats
     st.markdown('<div class="sidebar-section"><h4>Session Stats</h4>', unsafe_allow_html=True)
-    conf_val = f"{st.session_state.last_confidence:.2f}" if st.session_state.last_confidence is not None else "—"
-    dur_val  = f"{st.session_state.last_duration_ms:.0f} ms" if st.session_state.last_duration_ms is not None else "—"
+    conf_val  = f"{st.session_state.last_confidence:.2f}" if st.session_state.last_confidence is not None else "—"
+    dur_val   = f"{st.session_state.last_duration_ms:.0f} ms" if st.session_state.last_duration_ms is not None else "—"
+    tok_val   = f"{st.session_state.last_total_tokens:,}" if st.session_state.last_total_tokens else "—"
+    ctx_limit = int(os.getenv("GROQ_CONTEXT_WINDOW", "32768"))
+    ctx_pct   = f" ({st.session_state.last_total_tokens/ctx_limit*100:.1f}% of ctx)" if st.session_state.last_total_tokens else ""
     st.markdown(f"""
     <div class="sidebar-stat">
         <span class="stat-label">Queries</span>
@@ -349,7 +357,24 @@ with st.sidebar:
         <span class="stat-label">Last duration</span>
         <span class="stat-value">{dur_val}</span>
     </div>
+    <div class="sidebar-stat">
+        <span class="stat-label">Tokens used</span>
+        <span class="stat-value">{tok_val}{ctx_pct}</span>
+    </div>
     """, unsafe_allow_html=True)
+
+    # Per-stage token + duration breakdown
+    usage = st.session_state.last_token_usage
+    if usage:
+        st.markdown("**Last query — stage detail**")
+        for stage, t in usage.items():
+            if not isinstance(t, dict):
+                continue
+            st.caption(
+                f"`{stage}` · in {t.get('in',0):,} · out {t.get('out',0):,} · "
+                f"total {t.get('total',0):,}"
+            )
+
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -405,8 +430,10 @@ if question:
             cache_type = done.get("cache_type", meta.get("cache_type"))
 
             # Update session stats
-            st.session_state.last_confidence  = confidence
-            st.session_state.last_duration_ms = duration
+            st.session_state.last_confidence   = confidence
+            st.session_state.last_duration_ms  = duration
+            st.session_state.last_token_usage  = done.get("token_usage",  meta.get("token_usage", {}))
+            st.session_state.last_total_tokens = done.get("total_tokens", meta.get("total_tokens", 0))
             if cache_hit:
                 st.session_state.cache_hits += 1
 

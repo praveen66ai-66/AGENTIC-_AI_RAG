@@ -153,6 +153,7 @@ def run(
         "iteration_count":    0,
         "trajectory_id":      trajectory_id,
         "retrieval_empty":    False,
+        "stage_tokens":       {},
     }
 
     config      = {"configurable": {"thread_id": session_id}}
@@ -168,7 +169,11 @@ def run(
     plan            = final_state.get("plan", [])
     iteration_count = final_state.get("iteration_count", 0)
     sources         = final_state.get("sources", [])
+    stage_tokens    = final_state.get("stage_tokens", {})
     duration        = round((time.time() - started_at) * 1000, 2)
+
+    # Aggregate total tokens across all stages
+    total_tokens_used = sum(v.get("total", 0) for v in stage_tokens.values() if isinstance(v, dict))
 
     citation_summary = ", ".join(
         f"p{s.get('page')} {s.get('section','')}" for s in sources[:3]
@@ -207,6 +212,7 @@ def run(
         plan=plan, retrieved=citation_summary, answer=answer,
         iteration_count=iteration_count, duration_ms=duration,
         confidence=confidence, cache_hit=False,
+        token_usage=stage_tokens, total_tokens=total_tokens_used,
     )
 
     # ── 8. Semantic answer cache — skip LLM next time ─────────────────────────
@@ -227,6 +233,8 @@ def run(
         "idempotency_replay": False,
         "created_at":         datetime.now(timezone.utc).isoformat(),
         "duration_ms":        duration,
+        "token_usage":        stage_tokens,
+        "total_tokens":       total_tokens_used,
     }
     splunk.rag_query(
         tenant_id=tenant_id, user_id=user_id,
@@ -371,8 +379,11 @@ def stream(
                      iteration_count=mid_state.get("iteration_count", 0),
                      duration_ms=duration, source_count=len(sources))
 
+    total_tok = sum(v.get("total", 0) for v in mid_state.get("stage_tokens", {}).values() if isinstance(v, dict))
     yield {"type": "done", "sources": sources, "confidence": confidence,
-           "duration_ms": duration, "cache_hit": False}
+           "duration_ms": duration, "cache_hit": False,
+           "token_usage": mid_state.get("stage_tokens", {}),
+           "total_tokens": total_tok}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -165,6 +165,9 @@ def setup_tables() -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_tenant_user  ON query_logs(tenant_id, user_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_session       ON query_logs(session_id);")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_ql_created       ON query_logs(created_at DESC);")
+            # Non-destructive: adds column if the table already exists without it
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS token_usage  JSONB DEFAULT '{}';")
+            cur.execute("ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS total_tokens INT  DEFAULT 0;")
 
 
 # ── Session registry ──────────────────────────────────────────────────────────
@@ -386,6 +389,8 @@ def log_query(
     confidence:      Optional[float] = None,
     cache_hit:       bool            = False,
     cache_type:      Optional[str]   = None,
+    token_usage:     Optional[dict]  = None,
+    total_tokens:    int             = 0,
 ) -> None:
     """
     Full pipeline audit trace for one request.
@@ -399,8 +404,8 @@ def log_query(
                         (tenant_id, user_id, session_id, trajectory_id,
                          query, plan, retrieved, answer, iteration_count,
                          duration_ms, confidence, cache_hit, cache_type,
-                         idempotency_key)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         token_usage, total_tokens, idempotency_key)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (idempotency_key) DO NOTHING
                 """, (
                     tenant_id, user_id, session_id, trajectory_id,
@@ -410,6 +415,8 @@ def log_query(
                     iteration_count,
                     duration_ms, confidence,
                     cache_hit, cache_type,
+                    json.dumps(token_usage or {}),
+                    total_tokens,
                     idempotency_key,
                 ))
     except Exception:

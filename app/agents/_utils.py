@@ -59,6 +59,30 @@ def load_guardrail_prompt(layer: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def get_tokens(response) -> dict:
+    """
+    Extract real token usage from a LangChain LLM response.
+    Returns {"in": N, "out": M, "total": N+M} or empty dict on failure.
+    Works with both invoke() AIMessage and stream() AIMessageChunk (last chunk).
+    """
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        m = response.usage_metadata
+        return {
+            "in":    m.get("input_tokens",  0),
+            "out":   m.get("output_tokens", 0),
+            "total": m.get("total_tokens",  0),
+        }
+    if hasattr(response, "response_metadata"):
+        tu = (response.response_metadata or {}).get("token_usage", {})
+        if tu:
+            return {
+                "in":    tu.get("prompt_tokens",     0),
+                "out":   tu.get("completion_tokens", 0),
+                "total": tu.get("total_tokens",      0),
+            }
+    return {}
+
+
 def parse_json(text: str) -> dict:
     """Extract and parse JSON from an LLM response, stripping markdown fences.
     Always returns a dict — never a list, string, or None."""

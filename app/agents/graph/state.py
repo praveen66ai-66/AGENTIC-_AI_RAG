@@ -27,3 +27,4 @@ class AgentState(TypedDict):
     iteration_count: int      # guards against infinite retrieval loops
     trajectory_id: str
     retrieval_empty: bool     # True when retriever found 0 chunks after all filtering
+    stage_tokens: dict        # {"planner": {"in":N,"out":M}, "reasoner": {...}, "generator": {...}}

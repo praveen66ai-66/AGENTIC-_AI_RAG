@@ -2,7 +2,7 @@ import time
 
 from langchain_core.messages import SystemMessage
 
-from app.agents._utils import format_chunks, get_llm, load_prompt, parse_json
+from app.agents._utils import format_chunks, get_llm, get_tokens, load_prompt, parse_json
 from app.agents.graph.state import AgentState
 from app.observability import splunk
 
@@ -49,6 +49,7 @@ def reasoner_node(state: AgentState) -> dict:
 
     context_sufficient = bool(parsed.get("context_sufficient", False))
     confidence         = float(parsed.get("confidence", 0.0))
+    tokens             = get_tokens(response)
 
     splunk.node_step(
         node="reasoner", phase="exit",
@@ -57,10 +58,18 @@ def reasoner_node(state: AgentState) -> dict:
         duration_ms=round((time.time() - t0) * 1000, 2),
         context_sufficient=context_sufficient,
         confidence=confidence,
+        tokens_in=tokens.get("in", 0),
+        tokens_out=tokens.get("out", 0),
+        tokens_total=tokens.get("total", 0),
     )
+
+    stage_tokens = dict(state.get("stage_tokens") or {})
+    key = f"reasoner_{iteration}" if iteration > 1 else "reasoner"
+    stage_tokens[key] = tokens
 
     return {
         "context_sufficient": context_sufficient,
         "retrieval_gap":      str(parsed.get("retrieval_gap") or ""),
         "confidence":         confidence,
+        "stage_tokens":       stage_tokens,
     }

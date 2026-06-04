@@ -2,7 +2,7 @@ import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents._utils import format_chunks, format_history, get_llm, load_prompt
+from app.agents._utils import format_chunks, format_history, get_llm, get_tokens, load_prompt
 from app.agents.graph.state import AgentState
 from app.guardrails.output_guard import check as output_guard_check
 from app.memory import session as session_mem
@@ -88,6 +88,7 @@ def generator_node(state: AgentState) -> dict:
             HumanMessage(content=state["question"]),
         ])
         answer = response.content.strip()
+        tokens = get_tokens(response)
 
         # Premature abandonment guard: when the iteration cap fired before the
         # reasoner was satisfied, append an explicit gap caveat so the user knows
@@ -128,6 +129,9 @@ def generator_node(state: AgentState) -> dict:
         session_mem.append_message(sid, "user",      state["question"], msg_id=f"{trajectory_id}:user")
         session_mem.append_message(sid, "assistant", answer,            msg_id=f"{trajectory_id}:asst")
 
+    stage_tokens = dict(state.get("stage_tokens") or {})
+    stage_tokens["generator"] = tokens
+
     splunk.node_step(
         node="generator", phase="exit",
         trajectory_id=trajectory_id, session_id=sid,
@@ -136,10 +140,14 @@ def generator_node(state: AgentState) -> dict:
         answer_length=len(answer),
         source_count=len(sources),
         guard_blocked=guard_blocked,
+        tokens_in=tokens.get("in", 0),
+        tokens_out=tokens.get("out", 0),
+        tokens_total=tokens.get("total", 0),
     )
 
     return {
-        "answer":     answer,
-        "sources":    sources,
-        "confidence": confidence,
+        "answer":       answer,
+        "sources":      sources,
+        "confidence":   confidence,
+        "stage_tokens": stage_tokens,
     }

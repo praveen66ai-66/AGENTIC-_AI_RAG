@@ -2,7 +2,7 @@ import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.agents._utils import format_history, get_llm, load_prompt, parse_json
+from app.agents._utils import format_history, get_llm, get_tokens, load_prompt, parse_json
 from app.agents.graph.state import AgentState
 from app.memory import session as session_mem
 from app.observability import splunk
@@ -48,15 +48,23 @@ def planner_node(state: AgentState) -> dict:
 
     parsed = parse_json(response.content)
     plan   = parsed.get("sub_tasks") or [state["question"]]
+    tokens = get_tokens(response)
 
     splunk.node_step(
         node="planner", phase="exit",
         trajectory_id=trajectory_id, session_id=sid,
         duration_ms=round((time.time() - t0) * 1000, 2),
         plan_count=len(plan),
+        tokens_in=tokens.get("in", 0),
+        tokens_out=tokens.get("out", 0),
+        tokens_total=tokens.get("total", 0),
     )
+
+    stage_tokens = dict(state.get("stage_tokens") or {})
+    stage_tokens["planner"] = tokens
 
     return {
         "plan":            [str(t) for t in plan],
         "iteration_count": 0,
+        "stage_tokens":    stage_tokens,
     }
