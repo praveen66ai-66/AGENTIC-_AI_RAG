@@ -6,7 +6,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-1.2-orange)](https://langchain-ai.github.io/langgraph/)
 [![LangChain](https://img.shields.io/badge/LangChain-1.3-yellow)](https://www.langchain.com/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-blueviolet?logo=openai)](https://openai.com/)
+[![Groq](https://img.shields.io/badge/Groq-llama--3.3--70b-orange)](https://groq.com/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-Cloud-blue)](https://qdrant.tech/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE)
 
 ---
@@ -23,7 +24,7 @@ The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orc
 - **Query:** *"What is the difference between FIFO and LIFO inventory valuation and how does each method affect net income during inflation?"*
 - **Output:** A cited, context-grounded answer with source page references and confidence score
 
-> **Note:** `CoreCourseFinancialAccounting.pdf` currently lives at the project root. It will be moved to `data/documents/` when the Docling ingestion pipeline is implemented.
+> **Note:** `CoreCourseFinancialAccounting.pdf` lives in `data/documents/`. Run `scripts/ingest.py` → `scripts/describe_images.py` → `scripts/build_index.py` in order to populate the Qdrant vector store before querying.
 
 ---
 
@@ -63,9 +64,9 @@ The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orc
               │                    │                    │
               ▼                    ▼                    ▼
    ┌────────────────┐   ┌──────────────────┐   ┌──────────────┐
-   │  Vector Store  │   │   OpenAI LLM     │   │  Guardrails  │
-   │  ChromaDB /    │   │  GPT-4o          │   │  (Output)    │
-   │  pgvector      │   │  text-embedding  │   │              │
+   │  Vector Store  │   │   Groq LLM       │   │  Guardrails  │
+   │  Qdrant Cloud  │   │  llama-3.3-70b   │   │  (Output)    │
+   │  Dense + BM25  │   │  + Gemini fallbk │   │              │
    └───────┬────────┘   └──────────────────┘   └──────────────┘
            │
   ┌────────┴──────────────────────────────────┐
@@ -210,16 +211,19 @@ system: |
 | ASGI Server | Uvicorn 0.48+ | Production-grade async server |
 | Agent Orchestration | LangGraph 1.2+ | Stateful multi-agent workflows |
 | LLM Framework | LangChain 1.3+ | Chains, tools, document utilities |
-| LLM Provider | OpenAI GPT-4o | Language model + embeddings |
-| PDF Processing | Docling (IBM) | Structured PDF parsing (tables, charts, formulas) |
+| LLM Provider | Groq (llama-3.3-70b-versatile) | Primary LLM via langchain-groq; Gemini 1.5 Flash fallback if `GOOGLE_API_KEY` set |
+| PDF Processing | Docling (IBM) + PyMuPDF | Structured PDF parsing (tables, charts, formulas) |
+| Dense Embeddings | sentence-transformers (BAAI/bge-base-en-v1.5) | 768-dim dense vectors for semantic search |
+| Sparse Embeddings | fastembed (Qdrant/BM25) | Keyword-level sparse vectors |
+| Vector Store | Qdrant Cloud | Hybrid dense+sparse search with RRF fusion; 3 collections |
+| Reranker | cross-encoder/ms-marco-MiniLM-L-2-v2 | Precision re-scoring pass after retrieval |
 | Data Validation | Pydantic v2 | Type-safe request/response schemas |
 | Short-term Memory | Redis | Working memory buffer (TTL-based) |
-| Long-term Memory | PostgreSQL | Episodic + semantic memory store |
-| Vector Store | ChromaDB (pilot) / pgvector (prod) | Semantic document retrieval |
+| Long-term Memory | PostgreSQL | Episodic memory store |
 | DB Migrations | Alembic | PostgreSQL schema versioning |
 | Package Manager | uv | Fast, reproducible dependency management |
 | Runtime | Python 3.12 | Latest stable CPython |
-| Observability | LangSmith + structured JSON logging | Tracing + Splunk-ready log pipeline |
+| Observability | LangSmith + Langfuse + Splunk HEC | Tracing, cost tracking, enterprise log pipeline |
 
 ---
 
@@ -234,8 +238,6 @@ Agentic_AI_Rag/
 ├── .python-version                  # Runtime pin: Python 3.12
 ├── .env.example                     # Environment variable template
 ├── .gitignore
-│
-├── CoreCourseFinancialAccounting.pdf  # ← will move to data/documents/ (Docling phase)
 │
 ├── app/                             # Application source
 │   │
@@ -269,7 +271,7 @@ Agentic_AI_Rag/
 │   │   └── retrieval/               # Vector retriever, reranker
 │   │
 │   ├── store/                       # Storage backend clients
-│   │   ├── vector/                  # ChromaDB (pilot) / pgvector (prod)
+│   │   ├── vector/                  # Qdrant client wrappers
 │   │   ├── relational/              # PostgreSQL client + Alembic integration
 │   │   └── cache/                   # Redis client
 │   │
@@ -288,9 +290,9 @@ Agentic_AI_Rag/
 │   └── models/                      # Pydantic schemas: request, response, domain
 │
 ├── data/                            # Data assets
-│   ├── documents/                   # Source PDF documents (post-ingestion phase)
-│   ├── vectordb/                    # Local ChromaDB store
-│   └── exports/                     # Processed outputs, evaluation results
+│   ├── documents/                   # Source PDF documents
+│   ├── processed/                   # Intermediate pipeline output (chunks JSON, page map, images)
+│   └── exports/                     # Evaluation results, exports
 │
 ├── db/                              # Database management
 │   ├── migrations/
@@ -309,9 +311,12 @@ Agentic_AI_Rag/
 │   │   └── memory/
 │   └── e2e/
 │
-├── scripts/                         # One-off CLI scripts: ingest, migrate, health-check
+├── scripts/                         # Pipeline scripts (run in order)
+│   ├── ingest.py                    # Step 1: PDF → text/table/image chunks
+│   ├── describe_images.py           # Step 2: Image → LLM text descriptions (Llama 4 Scout)
+│   └── build_index.py               # Step 3: Chunk → embed → upsert to Qdrant
 │
-└── docker/                          # Container configs: App + Redis + PostgreSQL + ChromaDB
+└── docker/                          # Container configs: App + Redis + PostgreSQL
 ```
 
 ---
@@ -322,9 +327,10 @@ Agentic_AI_Rag/
 |---|---|---|
 | Python | 3.12+ | Pinned via `.python-version` |
 | uv | Latest | `pip install uv` |
-| OpenAI API Key | — | For GPT-4o + embeddings |
+| Groq API Key | — | For llama-3.3-70b-versatile (primary LLM) |
+| Qdrant Cloud account | — | `QDRANT_URL` + `QDRANT_API_KEY` (free tier available) |
 | Redis | 7.0+ | Working memory (Docker recommended) |
-| PostgreSQL | 15+ | Episodic + semantic memory, trajectory |
+| PostgreSQL | 15+ | Episodic memory, trajectory |
 | Git | Any | |
 
 ---
@@ -349,13 +355,13 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Edit .env — fill in OPENAI_API_KEY at minimum
+# Edit .env — fill in GROQ_API_KEY, QDRANT_URL, QDRANT_API_KEY at minimum
 ```
 
 ### 4. Start Services (Docker)
 
 ```bash
-# Redis + PostgreSQL + ChromaDB
+# Redis + PostgreSQL  (Qdrant is cloud-hosted — no local container needed)
 docker compose -f docker/docker-compose.yml up -d
 ```
 
@@ -376,21 +382,37 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `OPENAI_API_KEY` | Yes | — | OpenAI API key |
-| `OPENAI_MODEL` | No | `gpt-4o` | Chat completion model |
-| `OPENAI_EMBEDDING_MODEL` | No | `text-embedding-3-large` | Embedding model |
+| `GROQ_API_KEY` | **Yes** | — | Groq API key (primary LLM) |
+| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq chat model |
+| `QDRANT_URL` | **Yes** | — | Qdrant Cloud cluster URL |
+| `QDRANT_API_KEY` | **Yes** | — | Qdrant Cloud API key |
+| `GOOGLE_API_KEY` | No | — | Google API key for Gemini 1.5 Flash fallback LLM |
+| `GOOGLE_MODEL` | No | `gemini-2.0-flash` | Gemini model (fallback) |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string |
-| `POSTGRES_URL` | No | `postgresql://localhost:5432/rag` | PostgreSQL connection string |
-| `VECTOR_STORE_TYPE` | No | `chroma` | `chroma` or `pgvector` |
-| `VECTOR_STORE_PATH` | No | `./data/vectordb` | Local ChromaDB path |
-| `CHUNK_SIZE` | No | `1000` | Tokens per document chunk |
-| `CHUNK_OVERLAP` | No | `200` | Overlap tokens between chunks |
+| `POSTGRES_HOST` | No | `localhost` | PostgreSQL host |
+| `POSTGRES_PORT` | No | `5432` | PostgreSQL port |
+| `POSTGRES_USER` | No | `postgres` | PostgreSQL user |
+| `POSTGRES_PASSWORD` | No | — | PostgreSQL password |
+| `POSTGRES_DB` | No | `postgres` | PostgreSQL database |
+| `PDF_SOURCE_DIR` | No | `./data/documents` | Source PDF directory for ingestion |
+| `CHUNK_SIZE` | No | `1000` | Characters per document chunk |
+| `CHUNK_OVERLAP` | No | `200` | Overlap characters between chunks |
+| `PDF_PAGE_OFFSET` | No | `16` | Offset between PDF page index and printed book page |
+| `RERANKER_ENABLED` | No | `true` | Enable cross-encoder reranker (`true`/`false`) |
+| `RERANKER_MODEL` | No | `cross-encoder/ms-marco-MiniLM-L-2-v2` | Reranker model |
 | `HOST` | No | `0.0.0.0` | API server host |
 | `PORT` | No | `8000` | API server port |
 | `ENV` | No | `development` | `development` or `production` |
 | `LANGCHAIN_TRACING_V2` | No | `false` | Enable LangSmith tracing |
 | `LANGCHAIN_API_KEY` | No | — | LangSmith API key |
 | `LANGCHAIN_PROJECT` | No | — | LangSmith project name |
+| `LANGFUSE_SECRET_KEY` | No | — | Langfuse secret key |
+| `LANGFUSE_PUBLIC_KEY` | No | — | Langfuse public key |
+| `LANGFUSE_HOST` | No | `https://cloud.langfuse.com` | Langfuse endpoint |
+| `SPLUNK_HOST` | No | — | Splunk HEC hostname |
+| `SPLUNK_HEC_PORT` | No | `8088` | Splunk HEC port |
+| `SPLUNK_HEC_TOKEN` | No | — | Splunk HEC token |
+| `SPLUNK_VERIFY_SSL` | No | `true` | Verify Splunk TLS certificate |
 
 ---
 
@@ -459,43 +481,34 @@ Content-Type: application/json
 ## Features Status
 
 ### Implemented
-- [x] Project scaffold: FastAPI + LangGraph + LangChain + OpenAI
-- [x] Full folder architecture with memory, guardrails, trajectory, prompts, observability layers
+- [x] FastAPI + LangGraph + LangChain + Groq scaffold with full folder architecture
 - [x] Reproducible environment via `uv` + lock file
-- [x] Environment template (`.env.example`)
+- [x] Docling PDF ingestion pipeline: parse → chunk → embed → upsert to Qdrant (3-script pipeline)
+- [x] Qdrant Cloud hybrid vector store: dense (BAAI/bge-base-en-v1.5) + sparse (BM25) with RRF fusion
+- [x] Cross-encoder reranker (ms-marco-MiniLM-L-2-v2) — precision pass after retrieval
+- [x] LangGraph state machine: planner, retriever, reasoner, generator nodes
+- [x] Input + output guardrails (prompt injection, domain check, hallucination detection)
+- [x] Redis working memory (conversation buffer, TTL-based)
+- [x] PostgreSQL episodic memory (session persistence)
+- [x] REST endpoints: `/query`, `/agent`, `/health`
+- [x] SSE streaming responses
+- [x] Streamlit UI
+- [x] Structured JSON logging (Splunk HEC-compatible)
+- [x] LangSmith + Langfuse observability integration
 
 ### Roadmap
 
-**Phase 1 — Document Understanding (Next)**
-- [ ] Docling PDF pipeline: parse → chunk → embed → store
-- [ ] ChromaDB vector store integration
-- [ ] Semantic chunking strategy for financial tables and definitions
-
-**Phase 2 — Agent Core**
-- [ ] LangGraph state machine: planner, retriever, reasoner, generator nodes
-- [ ] Input + output guardrails
-- [ ] Trajectory recorder → PostgreSQL
-
-**Phase 3 — Memory**
-- [ ] Redis working memory (conversation buffer, TTL)
-- [ ] PostgreSQL episodic memory (session persistence)
-- [ ] PostgreSQL + pgvector semantic memory (knowledge extraction)
-
-**Phase 4 — API + Observability**
-- [ ] REST endpoints: `/ingest`, `/query`, `/health`, `/sessions`
-- [ ] SSE streaming responses
-- [ ] Structured JSON logging (Splunk HEC-compatible)
-- [ ] LangSmith tracing integration
-
-**Phase 5 — Evaluation + Deployment**
+**Next**
+- [ ] Docker Compose: app + Redis + PostgreSQL (local dev stack)
+- [ ] `.env.example` template for onboarding
 - [ ] RAGAS evaluation framework (faithfulness, relevancy, context recall)
-- [ ] Docker Compose: app + Redis + PostgreSQL + ChromaDB
+- [ ] PostgreSQL + pgvector semantic memory (knowledge extraction layer)
 - [ ] Prompt versioning via registry
 
 **Future**
-- [ ] Splunk integration for enterprise log aggregation
-- [ ] pgvector migration from ChromaDB (single DB infrastructure)
 - [ ] Multi-document corpus support
+- [ ] `/sessions` endpoint + session management UI
+- [ ] Splunk enterprise log aggregation (HEC pipeline is wired; index config pending)
 
 ---
 
@@ -542,4 +555,4 @@ MIT License — see [LICENSE](LICENSE).
 
 ---
 
-*Powered by LangGraph · LangChain · Docling · OpenAI · FastAPI · Redis · PostgreSQL · Python 3.12*
+*Powered by LangGraph · LangChain · Docling · Groq · Qdrant · FastEmbed · FastAPI · Redis · PostgreSQL · Python 3.12*
