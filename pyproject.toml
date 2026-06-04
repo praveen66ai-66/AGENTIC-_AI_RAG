@@ -28,4 +28,6 @@ dependencies = [
     "psutil>=6.0.0",
     "pytest>=8.0.0",
     "httpx>=0.27.0",
+    "pymupdf>=1.27.2.3",
+    "pymupdf4llm>=1.27.2.3",
 ]
