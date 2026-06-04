@@ -158,6 +158,11 @@ def run(
     config      = {"configurable": {"thread_id": session_id}}
     final_state = rag_graph.invoke(initial_state, config=config)
 
+    # Persist retrieval gap so the planner can address it on the next question
+    last_gap = final_state.get("retrieval_gap", "")
+    if last_gap:
+        session_mem.set_last_gap(prefix, last_gap)
+
     answer          = final_state.get("answer", "")
     confidence      = final_state.get("confidence", 0.5)
     plan            = final_state.get("plan", [])

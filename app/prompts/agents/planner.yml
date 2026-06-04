@@ -17,6 +17,9 @@ system: |
 
   ## Session History
   {session_summary}
+
+  ## Prior Retrieval Gap (what the last answer could not find)
+  {prior_gap}
   </context>
 
   <constraints>
@@ -25,6 +28,8 @@ system: |
   - Do not answer the question yourself; only plan retrieval
   - Do not fabricate financial facts or figures
   - Sub-tasks must be in the language of the source document
+  - If Prior Retrieval Gap is not "None", include at least one sub-task that
+    directly targets the missing information described in that gap
   </constraints>
 
   <output_format>

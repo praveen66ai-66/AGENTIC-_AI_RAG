@@ -27,12 +27,14 @@ def planner_node(state: AgentState) -> dict:
 
     splunk.node_step(node="planner", phase="enter", trajectory_id=trajectory_id, session_id=sid)
 
-    prompt  = load_prompt("planner")
-    history = session_mem.get_history(sid, *_split_prefix(sid)) if sid else []
+    prompt    = load_prompt("planner")
+    history   = session_mem.get_history(sid, *_split_prefix(sid)) if sid else []
+    prior_gap = session_mem.get_last_gap(sid) if sid else ""
 
     system_text = prompt["system"].format(
         document_description=_DOCUMENT_DESCRIPTION,
         session_summary=format_history(history),
+        prior_gap=prior_gap or "None",
     )
     human_text = prompt["human"].format(
         question=state["question"],

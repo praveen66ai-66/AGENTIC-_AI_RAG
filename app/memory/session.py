@@ -287,6 +287,22 @@ def add_chunks_seen(prefix: str, chunk_ids: list[str]) -> None:
     pipe.execute()
 
 
+# ── Prior retrieval gap ───────────────────────────────────────────────────────
+
+def set_last_gap(prefix: str, gap: str) -> None:
+    """Store the last retrieval gap so the planner can address it next turn."""
+    r   = _get_client()
+    key = _meta_key(prefix)
+    pipe = r.pipeline()
+    pipe.hset(key, "last_gap", gap)
+    pipe.expire(key, SESSION_TTL)
+    pipe.execute()
+
+
+def get_last_gap(prefix: str) -> str:
+    return _get_client().hget(_meta_key(prefix), "last_gap") or ""
+
+
 # ── Tenant session index ──────────────────────────────────────────────────────
 
 def _register_session(tenant_id: str, session_id: str) -> None:
