@@ -415,10 +415,10 @@ if question:
                 "X-Session-Id": st.session_state.session_id,
             }
 
-            # Stream tokens live — user sees answer appear word by word
+            # Stream tokens live — renders word by word
             answer = st.write_stream(_stream_agent(question, headers))
 
-            # After streaming completes, read metadata stashed by the generator
+            # After streaming — read metadata stashed during stream
             meta = st.session_state.get("_stream_meta", {})
             done = st.session_state.get("_stream_done", {})
 
@@ -427,9 +427,8 @@ if question:
             plan       = meta.get("plan", [])
             duration   = done.get("duration_ms", 0)
             cache_hit  = done.get("cache_hit", meta.get("cache_hit", False))
-            cache_type = done.get("cache_type", meta.get("cache_type"))
 
-            # Update session stats
+            # Update sidebar stats
             st.session_state.last_confidence   = confidence
             st.session_state.last_duration_ms  = duration
             st.session_state.last_token_usage  = done.get("token_usage",  meta.get("token_usage", {}))
@@ -437,62 +436,84 @@ if question:
             if cache_hit:
                 st.session_state.cache_hits += 1
 
-            # Confidence badge
-            conf_pct  = int(confidence * 100)
-            conf_col  = "#2e7d32" if confidence >= 0.7 else "#e65100" if confidence >= 0.4 else "#c62828"
-            cache_tag = ' <span style="background:#e3f2fd;border:1px solid #1976d2;border-radius:10px;padding:2px 10px;font-size:11px;color:#1565c0;">⚡ cached</span>' if cache_hit else ""
+            # ── Confidence + duration badge ───────────────────────────────────
+            conf_pct = int(confidence * 100)
+            conf_col = "#2e7d32" if confidence >= 0.7 else "#e65100" if confidence >= 0.4 else "#c62828"
+            cache_tag = ' <span style="background:#e3f2fd;border:1px solid #1976d2;border-radius:10px;padding:1px 8px;font-size:11px;color:#1565c0;font-weight:600;">⚡ cached</span>' if cache_hit else ""
             st.markdown(
-                f'<div style="display:flex;align-items:center;gap:12px;margin-top:8px;margin-bottom:4px;">'
-                f'<span style="font-size:12px;color:#4a7fa8;">Confidence</span>'
-                f'<span style="font-size:15px;font-weight:700;color:{conf_col};">{conf_pct}%</span>'
-                f'<span style="font-size:12px;color:#4a7fa8;">· {duration:.0f} ms</span>'
+                f'<div style="display:flex;align-items:center;gap:10px;margin:6px 0 2px 0;'
+                f'padding:6px 12px;background:#f5f7fa;border-radius:8px;border:1px solid #e0e0e0;">'
+                f'<span style="font-size:11px;color:#78909c;font-weight:500;">CONFIDENCE</span>'
+                f'<span style="font-size:13px;font-weight:700;color:{conf_col};">{conf_pct}%</span>'
+                f'<span style="color:#e0e0e0;">|</span>'
+                f'<span style="font-size:11px;color:#78909c;">{duration:.0f} ms</span>'
                 f'{cache_tag}</div>',
                 unsafe_allow_html=True,
             )
 
-            # Plan expander
+            # ── Citations ─────────────────────────────────────────────────────
+            if sources:
+                cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
+                for i, s in enumerate(sources, 1):
+                    section = (s.get("section") or "—")[:60]
+                    score   = float(s.get("score") or 0.0)
+                    cite_html += (
+                        f'<div class="cite-item">'
+                        f'<span class="cite-num">[{i}]</span>'
+                        f'<span class="cite-info">Page {s.get("page","?")} &nbsp;·&nbsp; '
+                        f'{section} &nbsp;·&nbsp; score {score:.3f}</span></div>'
+                    )
+                cite_html += "</div>"
+                st.markdown(cite_html, unsafe_allow_html=True)
+
+            # ── Retrieval plan ────────────────────────────────────────────────
             if plan:
                 with st.expander(f"🧠 Retrieval plan ({len(plan)} sub-tasks)", expanded=False):
                     for i, task in enumerate(plan, 1):
                         st.markdown(f"**{i}.** {task}")
 
-            # Latency breakdown
+            # ── Latency breakdown (compact HTML table, not st.table) ──────────
             trace = done.get("latency_trace", {})
             if trace:
-                total_ms = trace.get("_total_ms", duration) or duration
-                with st.expander(f"⏱ Latency breakdown — {total_ms:.0f} ms total", expanded=False):
-                    rows = []
-                    order = ["_pipeline", "planner", "retriever", "retriever_1",
-                             "reasoner", "reasoner_1", "generator"]
-                    for key in order:
-                        if key not in trace:
+                total_ms = float(trace.get("_total_ms") or duration or 1)
+                order = ["_pipeline", "planner", "retriever", "retriever_1",
+                         "reasoner", "reasoner_1", "generator"]
+                rows_html = ""
+                for key in order:
+                    if key not in trace:
+                        continue
+                    val = trace[key]
+                    items = val.items() if isinstance(val, dict) else []
+                    for sub, ms in items:
+                        try:
+                            ms = float(ms)
+                        except (TypeError, ValueError):
                             continue
-                        val = trace[key]
-                        if key == "_pipeline":
-                            for sub, ms in val.items():
-                                pct = ms / total_ms * 100 if total_ms else 0
-                                rows.append({"Step": sub.replace("_ms",""), "ms": f"{ms:.1f}", "%": f"{pct:.1f}%"})
-                        elif isinstance(val, dict):
-                            for sub, ms in val.items():
-                                pct = ms / total_ms * 100 if total_ms else 0
-                                label = f"{key}.{sub.replace('_ms','')}"
-                                rows.append({"Step": label, "ms": f"{ms:.1f}", "%": f"{pct:.1f}%"})
-                    if rows:
-                        st.table(rows)
-
-            # Sources
-            if sources:
-                cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
-                for i, s in enumerate(sources, 1):
-                    section = (s.get("section") or "—")[:60]
-                    score   = s.get("score", 0.0)
-                    cite_html += f"""
-<div class="cite-item">
-    <span class="cite-num">[{i}]</span>
-    <span class="cite-info">Page {s.get('page','?')} &nbsp;·&nbsp; {section} &nbsp;·&nbsp; score {score:.3f}</span>
-</div>"""
-                cite_html += "</div>"
-                st.markdown(cite_html, unsafe_allow_html=True)
+                        pct  = ms / total_ms * 100
+                        label = sub.replace("_ms","") if key == "_pipeline" else f"{key}.{sub.replace('_ms','')}"
+                        bar_w = min(int(pct), 100)
+                        bar_col = "#1565c0" if pct > 30 else "#42a5f5" if pct > 10 else "#90caf9"
+                        rows_html += (
+                            f'<tr><td style="font-size:11px;color:#546e7a;padding:2px 8px;">{label}</td>'
+                            f'<td style="font-size:11px;font-weight:600;padding:2px 8px;">{ms:.0f} ms</td>'
+                            f'<td style="padding:2px 8px;">'
+                            f'<div style="background:#eceff1;border-radius:3px;height:8px;width:100px;">'
+                            f'<div style="background:{bar_col};width:{bar_w}px;height:8px;border-radius:3px;"></div>'
+                            f'</div></td>'
+                            f'<td style="font-size:11px;color:#78909c;padding:2px 8px;">{pct:.1f}%</td></tr>'
+                        )
+                if rows_html:
+                    with st.expander(f"⏱ Latency — {total_ms:.0f} ms total", expanded=False):
+                        st.markdown(
+                            f'<table style="width:100%;border-collapse:collapse;">'
+                            f'<thead><tr>'
+                            f'<th style="font-size:10px;color:#90a4ae;text-align:left;padding:2px 8px;">STEP</th>'
+                            f'<th style="font-size:10px;color:#90a4ae;text-align:left;padding:2px 8px;">TIME</th>'
+                            f'<th style="font-size:10px;color:#90a4ae;padding:2px 8px;"></th>'
+                            f'<th style="font-size:10px;color:#90a4ae;text-align:left;padding:2px 8px;">%</th>'
+                            f'</tr></thead><tbody>{rows_html}</tbody></table>',
+                            unsafe_allow_html=True,
+                        )
 
             st.session_state.chat_history.append({"role": "assistant", "content": answer})
 

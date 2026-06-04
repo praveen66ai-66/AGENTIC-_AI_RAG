@@ -89,7 +89,9 @@ def agent_stream_endpoint(req: AgentRequest, ctx: RequestContext = Depends(get_c
                 user_id=ctx.user_id,
                 idempotency_key=str(uuid.uuid4()),
             ):
-                yield f"data: {json.dumps(event)}\n\n"
+                # default=str handles numpy floats from reranker scores and
+                # any other non-JSON-serializable types silently
+                yield f"data: {json.dumps(event, default=str)}\n\n"
         except Exception as exc:
             logger.exception("Stream error")
             yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
