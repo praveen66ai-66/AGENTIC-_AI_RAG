@@ -6,8 +6,8 @@ from app.observability import splunk
 from app.retrieval.reranker import rerank
 from app.retrieval.search import hybrid_search
 
-_FETCH_K        = 10
-_RERANK_K       = 5
+_FETCH_K          = 5    # reduced from 10 — fewer candidates = faster reranking
+_RERANK_K         = 3    # top 3 after rerank is enough for a finance Q&A pilot
 _RERANK_THRESHOLD = 0.4
 
 
