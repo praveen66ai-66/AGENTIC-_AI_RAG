@@ -37,12 +37,14 @@ OUT_DIR    = Path("data/processed")
 IMAGES_DIR = OUT_DIR / "images"
 
 SAMPLE_ONLY = True
-START_PAGE  = 801    # first page of this batch (inclusive)
+START_PAGE  = 1      # re-ingest full book with improved formula extraction
 END_PAGE    = 1050   # last page of this batch (inclusive, covers end of book)
 
 FRONT_MATTER_PAGES  = {1, 2, 3, 4, 5}
 TABLE_CONTEXT_LINES = 8
-MIN_IMAGE_SIZE      = 200   # px — skip logos/icons
+MIN_IMAGE_SIZE      = 200   # px — large diagrams/charts (both dims must exceed this)
+MIN_FORMULA_WIDTH   = 30    # px — formula images are wide but short
+MIN_FORMULA_HEIGHT  = 8     # px — minimum height for a formula image
 
 # Section names that indicate exercise/Q&A content — tagged is_exercise=True
 # so they can be routed to a separate Qdrant collection and excluded from
@@ -114,7 +116,15 @@ def extract_elements(converter, pdf_path: Path, pages: list[int]) -> list[dict]:
                 image_path = ""
                 try:
                     image = item.get_image(doc)
-                    if image and image.width > MIN_IMAGE_SIZE and image.height > MIN_IMAGE_SIZE:
+                    # Save large diagrams AND formula-sized landscape images.
+                    # Formulas are wide but short (e.g. 40x14px at 0.5x scale) —
+                    # the old 200px floor silently dropped them.
+                    is_diagram     = (image.width  > MIN_IMAGE_SIZE and
+                                      image.height > MIN_IMAGE_SIZE)
+                    is_formula_img = (image.width  >= MIN_FORMULA_WIDTH  and
+                                      image.height >= MIN_FORMULA_HEIGHT  and
+                                      image.width  >= 2 * image.height)
+                    if image and (is_diagram or is_formula_img):
                         filename   = f"page{item_page}_img{pic_idx}.png"
                         saved_path = IMAGES_DIR / filename
                         image.save(saved_path)
@@ -154,6 +164,103 @@ def extract_elements(converter, pdf_path: Path, pages: list[int]) -> list[dict]:
 
     print()
     return all_elements
+
+
+# ── PyMuPDF supplementary formula-text pass ──────────────────────────────────
+
+def _is_formula_text(text: str) -> bool:
+    """Heuristic: does this short block look like a formula rather than a heading?"""
+    t = text.strip()
+    if not t or len(t) > 250:
+        return False
+    math_chars = set("/×÷−±∑∫√≤≥≠≈∞·")
+    math_kws   = {"fcf","fcff","wacc","ebit","ebitda","npv","irr","roe",
+                  "roce","capm","eps","ev","tv","nopat","dscr","ltv"}
+    has_math_char  = any(c in math_chars for c in t)
+    has_eq_frac    = "=" in t and ("/" in t or any(c in math_chars for c in t))
+    has_kw_eq      = any(k in t.lower() for k in math_kws) and "=" in t
+    short_fragment = (len(t) < 30 and "\n" in t and
+                      any(k in t.lower() for k in math_kws))
+    return has_math_char or has_eq_frac or has_kw_eq or short_fragment
+
+
+def extract_formula_text(
+    pdf_path: Path,
+    pages: list[int],
+    docling_elements: list[dict],
+    file_hash: str,
+) -> list[dict]:
+    """
+    PyMuPDF pass: extract formula/equation text blocks that Docling dropped.
+    Only adds blocks NOT already captured by Docling and that look mathematical.
+    """
+    try:
+        import pymupdf
+    except ImportError:
+        print("  [formula pass] pymupdf not installed — skipping")
+        return []
+
+    # Page → section from Docling so formula items get correct section metadata
+    page_section:     dict[int, str]  = {}
+    page_is_exercise: dict[int, bool] = {}
+    cur_sec = ""
+    is_ex   = False
+    for el in docling_elements:
+        pg = el.get("page")
+        if el["type"] == "SectionHeaderItem":
+            cur_sec = el.get("text", "")
+            is_ex   = cur_sec.lower().strip() in EXERCISE_SECTION_NAMES
+        if pg:
+            page_section[pg]     = cur_sec
+            page_is_exercise[pg] = is_ex
+
+    # Fingerprints of what Docling already captured (first 25 chars, no spaces)
+    docling_fps: dict[int, set[str]] = {}
+    for el in docling_elements:
+        pg   = el.get("page")
+        text = el.get("text", "").strip()
+        if pg and text:
+            fp = text[:25].lower().replace(" ", "")
+            docling_fps.setdefault(pg, set()).add(fp)
+
+    extras: list[dict] = []
+    doc = pymupdf.open(str(pdf_path))
+
+    for page_no in pages:
+        try:
+            page = doc[page_no - 1]
+        except Exception:
+            continue
+        for block in page.get_text("blocks"):
+            if len(block) < 7 or block[6] != 0:   # skip image blocks
+                continue
+            text = block[4].strip()
+            if not text or len(text) < 4:
+                continue
+            fp = text[:25].lower().replace(" ", "")
+            if fp in docling_fps.get(page_no, set()):
+                continue                            # already captured by Docling
+            if not _is_formula_text(text):
+                continue
+            # Collapse newlines inside formula fragments into spaces so the
+            # chunk reads more naturally when embedded (e.g. "V\nFCFF\nk" → "V FCFF k")
+            text = " ".join(text.split())
+            extras.append({
+                "page":            page_no,
+                "type":            "FormulaItem",
+                "level":           1,
+                "section":         page_section.get(page_no, ""),
+                "text":            text,
+                "content_type":    "text",
+                "is_front_matter": page_no in FRONT_MATTER_PAGES,
+                "is_exercise":     page_is_exercise.get(page_no, False),
+                "file_hash":       file_hash,
+            })
+
+    doc.close()
+    if extras:
+        print(f"  PyMuPDF formula pass: +{len(extras)} formula text block(s) added")
+    return extras
 
 
 # ── Separation ────────────────────────────────────────────────────────────────
@@ -274,9 +381,15 @@ def main():
         print("Mode: FULL DOCUMENT — this will take ~4 hours\n")
 
     elements = extract_elements(converter, PDF_PATH, pages)
-    print(f"Total raw elements: {len(elements)}")
+    print(f"Total raw elements (Docling): {len(elements)}")
 
-    text_chunks, table_chunks, image_refs = separate(elements, file_hash)
+    # Supplementary PyMuPDF pass — adds formula text blocks Docling drops
+    print("\nRunning PyMuPDF formula text pass...")
+    formula_elements = extract_formula_text(PDF_PATH, pages, elements, file_hash)
+    all_elements = elements + formula_elements
+    print(f"Total elements after formula pass: {len(all_elements)}")
+
+    text_chunks, table_chunks, image_refs = separate(all_elements, file_hash)
 
     # Audit exercise vs theory split
     exercise_text   = sum(1 for c in text_chunks  if c["is_exercise"])
