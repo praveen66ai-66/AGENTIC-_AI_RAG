@@ -15,9 +15,23 @@ Usage:
 import argparse
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from dotenv import load_dotenv
+
+UAE_TZ = timezone(timedelta(hours=4))  # Gulf Standard Time, UTC+4
+
+
+def _ts(dt) -> str:
+    """Format a datetime or string as UAE time."""
+    try:
+        if isinstance(dt, str):
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(UAE_TZ).strftime("%Y-%m-%d %H:%M:%S GST")
+    except Exception:
+        return str(dt)
 
 load_dotenv()
 
@@ -112,9 +126,7 @@ def main():
     session_total_ms     = 0
 
     for i, row in enumerate(rows, 1):
-        created  = row["created_at"]
-        if hasattr(created, "strftime"):
-            created = created.strftime("%Y-%m-%d %H:%M:%S")
+        created = _ts(row["created_at"])
 
         total_tok = row.get("total_tokens") or 0
         duration  = row.get("duration_ms") or 0

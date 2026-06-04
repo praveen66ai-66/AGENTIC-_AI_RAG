@@ -16,8 +16,8 @@ Idempotency
   a retried request returns the stored result without re-running the pipeline.
 
 Timestamps
-  started_at captured at function entry; duration_ms computed at the end
-  and written to both the result dict and the PG audit log.
+  All app-level timestamps use UAE time (UTC+4, Gulf Standard Time).
+  started_at captured at function entry; duration_ms computed at the end.
   PostgreSQL created_at columns use the DB clock (DEFAULT NOW()).
 """
 
@@ -25,7 +25,10 @@ import hashlib
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# UAE — Gulf Standard Time (UTC+4, no daylight saving)
+UAE_TZ = timezone(timedelta(hours=4))
 
 from app.agents.graph.builder import rag_graph, pre_graph
 from app.memory import semantic_cache
@@ -133,7 +136,7 @@ def run(
             "cache_type":         cache_type,
             "similarity":         cached.get("similarity", 1.0),
             "idempotency_replay": False,
-            "created_at":         datetime.now(timezone.utc).isoformat(),
+            "created_at":         datetime.now(UAE_TZ).isoformat(),
             "duration_ms":        duration,
         }
         splunk.rag_query(
@@ -252,7 +255,7 @@ def run(
         "cache_type":         None,
         "similarity":         None,
         "idempotency_replay": False,
-        "created_at":         datetime.now(timezone.utc).isoformat(),
+        "created_at":         datetime.now(UAE_TZ).isoformat(),
         "duration_ms":        duration,
         "token_usage":        stage_tokens,
         "total_tokens":       total_tokens_used,

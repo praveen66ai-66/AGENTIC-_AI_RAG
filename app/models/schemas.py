@@ -99,5 +99,5 @@ class QueryResponse(BaseModel):
     citations:   list[Citation]
     answer:      Optional[str] = None
     llm_ready:   bool = False
-    created_at:  str  = ""          # ISO-8601 UTC timestamp of the response
+    created_at:  str  = ""          # ISO-8601 UAE (UTC+4) timestamp of the response
     duration_ms: float = 0.0        # end-to-end latency in milliseconds

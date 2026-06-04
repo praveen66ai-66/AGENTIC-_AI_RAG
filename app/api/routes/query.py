@@ -2,7 +2,9 @@
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+UAE_TZ = timezone(timedelta(hours=4))  # Gulf Standard Time, UTC+4
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.models.schemas import QueryRequest, QueryResponse, RetrievedChunk, Citation
@@ -112,6 +114,6 @@ def query(req: QueryRequest, ctx: RequestContext = Depends(get_context)):
         citations=citations,
         answer=None,
         llm_ready=False,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UAE_TZ).isoformat(),
         duration_ms=duration_ms,
     )
