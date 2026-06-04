@@ -231,6 +231,14 @@ def run(
     # Merge outer timings with per-node timings from the graph
     latency_trace = {"_pipeline": _outer_timings, **node_timings, "_total_ms": duration}
 
+    # Single flat Splunk event — all sub-steps in one record for easy SPL queries
+    splunk.latency_summary(
+        trajectory_id=trajectory_id,
+        session_id=prefix,
+        tenant_id=tenant_id,
+        latency_trace=latency_trace,
+    )
+
     result = {
         "answer":             answer,
         "sources":            sources,

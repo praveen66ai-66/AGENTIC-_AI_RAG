@@ -86,6 +86,40 @@ def _send(index: str, sourcetype: str, event: dict[str, Any]) -> None:
 
 # ── rag_pipeline index ────────────────────────────────────────────────────────
 
+def latency_summary(
+    *,
+    trajectory_id: str,
+    session_id:    str,
+    tenant_id:     str,
+    latency_trace: dict,
+) -> None:
+    """
+    One event per query with every sub-step duration flat at the top level.
+    This makes SPL trivial: no joins, no sub-searches — just table/timechart.
+
+    Sent to rag_pipeline index, sourcetype rag:latency.
+    Field naming convention: {node}_{substep}_ms  (e.g. retriever_qdrant_ms)
+    """
+    event: dict[str, Any] = {
+        "event_type":    "latency_summary",
+        "trajectory_id": trajectory_id,
+        "session_id":    session_id,
+        "tenant_id":     tenant_id,
+        "total_ms":      latency_trace.get("_total_ms", 0),
+    }
+
+    for node, val in latency_trace.items():
+        if node.startswith("_"):
+            # _pipeline dict → flatten as-is (keys already have _ms suffix)
+            if isinstance(val, dict):
+                for k, v in val.items():
+                    event[k] = v
+        elif isinstance(val, dict):
+            for k, v in val.items():
+                event[f"{node}_{k}"] = v   # e.g. retriever_qdrant_ms
+
+    _send("rag_pipeline", "rag:latency", event)
+
 def rag_query(
     *,
     tenant_id: str,
