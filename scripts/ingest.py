@@ -334,6 +334,54 @@ def separate(elements: list[dict], file_hash: str):
     return text_chunks, table_chunks, image_refs
 
 
+# ── Checkpoint helpers ────────────────────────────────────────────────────────
+
+CHECKPOINT_FILE = OUT_DIR / "ingest_checkpoint.json"
+BATCH_SIZE      = 50   # pages per batch — save progress after every 50 pages
+
+
+def _load_checkpoint() -> int:
+    """Return the last successfully completed page, or 0 if no checkpoint."""
+    if CHECKPOINT_FILE.exists():
+        try:
+            data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+            last = data.get("last_page", 0)
+            print(f"  Checkpoint found — resuming from page {last + 1}")
+            return last
+        except Exception:
+            pass
+    return 0
+
+
+def _save_checkpoint(last_page: int) -> None:
+    CHECKPOINT_FILE.write_text(
+        json.dumps({"last_page": last_page}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _append_chunks(
+    text_chunks: list, table_chunks: list, image_refs: list
+) -> None:
+    """Append this batch's output to the three JSON files on disk."""
+    out_text   = OUT_DIR / "text_chunks.json"
+    out_tables = OUT_DIR / "table_chunks.json"
+    out_images = OUT_DIR / "image_refs.json"
+
+    for path, new_data in [
+        (out_text,   text_chunks),
+        (out_tables, table_chunks),
+        (out_images, image_refs),
+    ]:
+        existing: list = []
+        if path.exists() and path.stat().st_size > 0:
+            with open(path, encoding="utf-8") as f:
+                existing = json.load(f)
+        merged = existing + new_data
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(merged, f, indent=2, ensure_ascii=False)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -348,7 +396,28 @@ def main():
     file_hash = compute_file_hash(PDF_PATH)
     print(f"  SHA256: {file_hash[:16]}...")
 
-    print("\nLoading Docling...")
+    # ── Checkpoint: skip already-processed pages ──────────────────────────────
+    last_done = _load_checkpoint()
+
+    if SAMPLE_ONLY:
+        all_pages = list(range(START_PAGE, END_PAGE + 1))
+        print(f"Mode: BATCH — pages {START_PAGE}–{END_PAGE}")
+    else:
+        all_pages = list(range(1, 10000))
+        print("Mode: FULL DOCUMENT — this will take ~4 hours")
+
+    # Filter out already-completed pages
+    pages = [p for p in all_pages if p > last_done]
+    if not pages:
+        print("All pages already processed. Delete ingest_checkpoint.json to restart.")
+        return
+
+    if last_done:
+        print(f"  Skipping pages 1–{last_done} (already done)")
+    print(f"  Processing {len(pages)} pages in batches of {BATCH_SIZE}\n")
+
+    # ── Load Docling ──────────────────────────────────────────────────────────
+    print("Loading Docling...")
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.datamodel.base_models import InputFormat
@@ -365,67 +434,59 @@ def main():
         }
     )
 
-    if SAMPLE_ONLY:
-        pages = list(range(START_PAGE, END_PAGE + 1))
-        print(f"Mode: BATCH — pages {START_PAGE}–{END_PAGE}\n")
-    else:
-        pages = list(range(1, 10000))
-        print("Mode: FULL DOCUMENT — this will take ~4 hours\n")
+    # ── Process in batches — save after each one ──────────────────────────────
+    total_text = total_tables = total_images = 0
+    num_batches = (len(pages) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    elements = extract_elements(converter, PDF_PATH, pages)
-    print(f"Total raw elements (Docling): {len(elements)}")
+    for batch_idx in range(num_batches):
+        batch = pages[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
+        print(f"\nBatch {batch_idx + 1}/{num_batches}  "
+              f"(pages {batch[0]}–{batch[-1]})  ━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    # Supplementary PyMuPDF pass — adds formula text blocks Docling drops
-    print("\nRunning PyMuPDF formula text pass...")
-    formula_elements = extract_formula_text(PDF_PATH, pages, elements, file_hash)
-    all_elements = elements + formula_elements
-    print(f"Total elements after formula pass: {len(all_elements)}")
+        try:
+            # Docling extraction
+            elements = extract_elements(converter, PDF_PATH, batch)
 
-    text_chunks, table_chunks, image_refs = separate(all_elements, file_hash)
+            # PyMuPDF supplementary formula text pass
+            formula_elements = extract_formula_text(PDF_PATH, batch, elements, file_hash)
+            all_elements     = elements + formula_elements
 
-    # Audit exercise vs theory split
-    exercise_text   = sum(1 for c in text_chunks  if c["is_exercise"])
-    exercise_tables = sum(1 for c in table_chunks if c["is_exercise"])
-    print(f"\nSplit results:")
-    print(f"  text_chunks  : {len(text_chunks)}  (exercise: {exercise_text})")
-    print(f"  table_chunks : {len(table_chunks)}  (exercise: {exercise_tables})")
-    print(f"  image_refs   : {len(image_refs)}")
+            # Separate into text / table / image
+            text_chunks, table_chunks, image_refs = separate(all_elements, file_hash)
 
-    saved_images = [r for r in image_refs if r["image_path"]]
-    print(f"  images saved : {len(saved_images)} (in {IMAGES_DIR})")
+            # Flush to disk immediately
+            _append_chunks(text_chunks, table_chunks, image_refs)
 
-    out_text   = OUT_DIR / "text_chunks.json"
-    out_tables = OUT_DIR / "table_chunks.json"
-    out_images = OUT_DIR / "image_refs.json"
+            # Save checkpoint — this batch is done
+            _save_checkpoint(batch[-1])
 
-    # Append to existing files so batches accumulate without overwriting prior pages.
-    # Deduplication in build_index.py (stable IDs + upsert) handles any overlaps.
-    for path, new_data in [
-        (out_text,   text_chunks),
-        (out_tables, table_chunks),
-        (out_images, image_refs),
-    ]:
-        existing: list = []
-        if path.exists() and path.stat().st_size > 0:
-            with open(path, encoding="utf-8") as f:
-                existing = json.load(f)
-        merged = existing + new_data
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=2, ensure_ascii=False)
-        print(f"  {path.name}: {len(existing)} existing + {len(new_data)} new = {len(merged)} total")
+            saved_imgs = sum(1 for r in image_refs if r.get("image_path"))
+            total_text   += len(text_chunks)
+            total_tables += len(table_chunks)
+            total_images += len(image_refs)
 
-    print("\nVerifying data integrity...")
-    # Pass merged totals so verify_outputs compares disk count against cumulative total
-    with open(out_text,   encoding="utf-8") as f: merged_text   = json.load(f)
-    with open(out_tables, encoding="utf-8") as f: merged_tables = json.load(f)
-    with open(out_images, encoding="utf-8") as f: merged_images = json.load(f)
-    verify_outputs(out_text, out_tables, out_images, merged_text, merged_tables, merged_images)
+            print(f"  ✓ text={len(text_chunks)}  tables={len(table_chunks)}  "
+                  f"images={len(image_refs)} ({saved_imgs} saved)  "
+                  f"checkpoint → page {batch[-1]}")
 
-    print(f"\nSaved to {OUT_DIR}/")
-    print(f"  text_chunks.json   ({len(text_chunks)} chunks)")
-    print(f"  table_chunks.json  ({len(table_chunks)} chunks, {TABLE_CONTEXT_LINES}-line context)")
-    print(f"  image_refs.json    ({len(image_refs)} refs, {len(saved_images)} with .png files)")
-    print(f"\nNext: run describe_images.py, then build_index.py")
+        except Exception as exc:
+            print(f"\n  ✗ BATCH FAILED at pages {batch[0]}–{batch[-1]}: {exc}")
+            print(f"    Progress saved up to page {batch[0] - 1}.")
+            print(f"    Fix the issue then re-run — it will resume from page {batch[0]}.")
+            sys.exit(1)
+
+    # ── All batches done — clean up checkpoint ────────────────────────────────
+    CHECKPOINT_FILE.unlink(missing_ok=True)
+
+    print(f"\n{'='*55}")
+    print(f"  Ingestion complete!")
+    print(f"  text_chunks  : {total_text}")
+    print(f"  table_chunks : {total_tables}")
+    print(f"  image_refs   : {total_images}")
+    print(f"{'='*55}")
+    print(f"\nNext steps:")
+    print(f"  uv run python scripts/describe_images.py")
+    print(f"  uv run python scripts/build_index.py")
 
 
 if __name__ == "__main__":
