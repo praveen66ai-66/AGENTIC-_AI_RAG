@@ -457,15 +457,24 @@ if question:
 
             # ── Citations ─────────────────────────────────────────────────────
             if sources:
+                # Sort highest relevance first so [1] is always the top source
+                sources_sorted = sorted(
+                    sources,
+                    key=lambda s: float(s.get("score") or 0.0),
+                    reverse=True,
+                )
                 cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
-                for i, s in enumerate(sources, 1):
-                    section = (s.get("section") or "—")[:60]
-                    score   = float(s.get("score") or 0.0)
+                for i, s in enumerate(sources_sorted, 1):
+                    section  = (s.get("section") or "—")[:60]
+                    score    = float(s.get("score") or 0.0)
+                    # Clamp to 0–1 in case raw logits slipped through, then show as %
+                    pct      = min(score, 1.0) * 100 if score <= 1.0 else 100.0
                     cite_html += (
                         f'<div class="cite-item">'
                         f'<span class="cite-num">[{i}]</span>'
                         f'<span class="cite-info">Page {s.get("page","?")} &nbsp;·&nbsp; '
-                        f'{section} &nbsp;·&nbsp; score {score:.3f}</span></div>'
+                        f'{section} &nbsp;·&nbsp; '
+                        f'<b>{pct:.1f}%</b></span></div>'
                     )
                 cite_html += "</div>"
                 st.markdown(cite_html, unsafe_allow_html=True)

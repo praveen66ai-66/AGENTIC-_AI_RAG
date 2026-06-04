@@ -39,7 +39,12 @@ def _load_page_map() -> None:
 def _to_book_page(pdf_page: int | None) -> int | None:
     if pdf_page is None:
         return None
-    return _PAGE_MAP.get(pdf_page, pdf_page - _PDF_PAGE_OFFSET)
+    if pdf_page in _PAGE_MAP:
+        return _PAGE_MAP[pdf_page]
+    calculated = pdf_page - _PDF_PAGE_OFFSET
+    # If the offset overshoots (front-matter pages), show the PDF page as-is
+    # so the user sees a real page number rather than a negative or zero.
+    return calculated if calculated > 0 else pdf_page
 
 _load_page_map()
 

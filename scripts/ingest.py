@@ -91,71 +91,122 @@ def verify_outputs(out_text, out_tables, out_images, text_chunks, table_chunks, 
 
 # ── Extraction ────────────────────────────────────────────────────────────────
 
-def extract_elements(converter, pdf_path: Path, pages: list[int]) -> list[dict]:
-    all_elements = []
-    total = len(pages)
+def _extract_one_page(converter, pdf_path: Path, page_no: int) -> list[dict]:
+    """Extract all elements from a single page. Raises on failure."""
+    result  = converter.convert(pdf_path, page_range=(page_no, page_no))
+    doc     = result.document
+    pic_idx = 0
+    elements: list[dict] = []
+
+    for item, level in doc.iterate_items():
+        item_type = type(item).__name__
+        item_page = None
+        if hasattr(item, "prov") and item.prov:
+            item_page = item.prov[0].page_no if item.prov else None
+
+        if item_type == "PictureItem":
+            image_path = ""
+            try:
+                image = item.get_image(doc)
+                if image:
+                    filename   = f"page{item_page}_img{pic_idx}.png"
+                    saved_path = IMAGES_DIR / filename
+                    image.save(saved_path)
+                    image_path = str(saved_path)
+                    print(f"\n  Saved image: {filename} ({image.width}x{image.height}px)")
+            except Exception as exc:
+                print(f"\n  Image save failed p{item_page}: {exc}")
+            pic_idx += 1
+            elements.append({
+                "page":       item_page,
+                "level":      level,
+                "type":       item_type,
+                "text":       "",
+                "label":      "",
+                "image_path": image_path,
+            })
+            continue
+
+        text = ""
+        if hasattr(item, "text"):
+            text = item.text or ""
+        elif hasattr(item, "export_to_markdown"):
+            try:
+                text = item.export_to_markdown(doc)
+            except TypeError:
+                text = item.export_to_markdown()
+
+        elements.append({
+            "page":       item_page,
+            "level":      level,
+            "type":       item_type,
+            "text":       text,
+            "label":      str(item.label) if hasattr(item, "label") else "",
+            "image_path": "",
+        })
+
+    return elements
+
+
+def extract_elements(
+    converter,
+    pdf_path: Path,
+    pages: list[int],
+    file_hash: str,
+    skip_pages: set[int],
+    last_checkpoint: int,
+) -> tuple[list[int], tuple[int, int, int]]:
+    """
+    Extract elements page by page, flushing each page to disk immediately.
+
+    A crash or stop-after-consecutive-failures never loses more than the one
+    page being processed — every previous page is already on disk.
+
+    Returns (failed_pages, (total_text, total_tables, total_images)).
+    Raises RuntimeError with .failed_pages and .last_good_checkpoint attached
+    when MAX_CONSECUTIVE_FAILS consecutive page failures occur.
+    """
+    failed_pages: list[int] = []
+    total             = len(pages)
+    consecutive_fails = 0
+    current_checkpoint = last_checkpoint
+    counts = [0, 0, 0]  # [text, tables, images]
 
     for i, page_no in enumerate(pages, 1):
         print(f"  [{i}/{total}] page {page_no}...", end="\r")
         try:
-            result = converter.convert(pdf_path, page_range=(page_no, page_no))
+            page_elements = _extract_one_page(converter, pdf_path, page_no)
+            consecutive_fails = 0
         except Exception as exc:
-            print(f"\n  Page {page_no} failed: {exc}")
+            consecutive_fails += 1
+            failed_pages.append(page_no)
+            print(f"\n  Page {page_no} failed ({consecutive_fails} consecutive): {exc}")
+            if consecutive_fails >= MAX_CONSECUTIVE_FAILS:
+                err = RuntimeError(
+                    f"Stopping: {consecutive_fails} consecutive page failures "
+                    f"(pages {page_no - consecutive_fails + 1}–{page_no}). "
+                    f"These pages will be permanently skipped on resume."
+                )
+                err.failed_pages = failed_pages
+                err.last_good_checkpoint = current_checkpoint
+                raise err from exc
             continue
 
-        doc     = result.document
-        pic_idx = 0
+        # ── Flush this page immediately so a later crash doesn't lose it ────
+        formula  = extract_formula_text(pdf_path, [page_no], page_elements, file_hash)
+        combined = page_elements + formula
+        text_c, table_c, img_c = separate(combined, file_hash)
+        _append_chunks(text_c, table_c, img_c)
+        counts[0] += len(text_c)
+        counts[1] += len(table_c)
+        counts[2] += len(img_c)
 
-        for item, level in doc.iterate_items():
-            item_type = type(item).__name__
-            item_page = None
-            if hasattr(item, "prov") and item.prov:
-                item_page = item.prov[0].page_no if item.prov else None
-
-            if item_type == "PictureItem":
-                image_path = ""
-                try:
-                    image = item.get_image(doc)
-                    if image:
-                        filename   = f"page{item_page}_img{pic_idx}.png"
-                        saved_path = IMAGES_DIR / filename
-                        image.save(saved_path)
-                        image_path = str(saved_path)
-                        print(f"\n  Saved image: {filename} ({image.width}x{image.height}px)")
-                except Exception as exc:
-                    print(f"\n  Image save failed p{item_page}: {exc}")
-                pic_idx += 1
-
-                all_elements.append({
-                    "page":       item_page,
-                    "level":      level,
-                    "type":       item_type,
-                    "text":       "",
-                    "label":      "",
-                    "image_path": image_path,
-                })
-                continue
-
-            text = ""
-            if hasattr(item, "text"):
-                text = item.text or ""
-            elif hasattr(item, "export_to_markdown"):
-                try:
-                    text = item.export_to_markdown(doc)
-                except TypeError:
-                    text = item.export_to_markdown()
-
-            all_elements.append({
-                "page":       item_page,
-                "level":      level,
-                "type":       item_type,
-                "text":       text,
-                "label":      str(item.label) if hasattr(item, "label") else "",
-                "image_path": "",
-            })
+        # Advance checkpoint one page at a time
+        _save_checkpoint(page_no, skip_pages | set(failed_pages))
+        current_checkpoint = page_no
 
     print()
-    return all_elements
+    return failed_pages, (counts[0], counts[1], counts[2])
 
 
 # ── PyMuPDF supplementary formula-text pass ──────────────────────────────────
@@ -336,26 +387,34 @@ def separate(elements: list[dict], file_hash: str):
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
 
-CHECKPOINT_FILE = OUT_DIR / "ingest_checkpoint.json"
-BATCH_SIZE      = 50   # pages per batch — save progress after every 50 pages
+CHECKPOINT_FILE        = OUT_DIR / "ingest_checkpoint.json"
+BATCH_SIZE             = 200  # pages per batch — save progress after every 200 pages
+MAX_CONSECUTIVE_FAILS  = 4    # stop if this many batches fail in a row
 
 
-def _load_checkpoint() -> int:
-    """Return the last successfully completed page, or 0 if no checkpoint."""
+def _load_checkpoint() -> tuple[int, set[int]]:
+    """Return (last_page, skip_pages). Both are 0/empty if no checkpoint exists."""
     if CHECKPOINT_FILE.exists():
         try:
             data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
             last = data.get("last_page", 0)
-            print(f"  Checkpoint found — resuming from page {last + 1}")
-            return last
+            skip = set(data.get("skip_pages", []))
+            msg  = f"Checkpoint found — resuming from page {last + 1}"
+            if skip:
+                msg += f", permanently skipping {len(skip)} failed page(s)"
+            print(f"  {msg}")
+            return last, skip
         except Exception:
             pass
-    return 0
+    return 0, set()
 
 
-def _save_checkpoint(last_page: int) -> None:
+def _save_checkpoint(last_page: int, skip_pages: set[int] | None = None) -> None:
+    data: dict = {"last_page": last_page}
+    if skip_pages:
+        data["skip_pages"] = sorted(skip_pages)
     CHECKPOINT_FILE.write_text(
-        json.dumps({"last_page": last_page}, indent=2),
+        json.dumps(data, indent=2),
         encoding="utf-8",
     )
 
@@ -397,7 +456,7 @@ def main():
     print(f"  SHA256: {file_hash[:16]}...")
 
     # ── Checkpoint: skip already-processed pages ──────────────────────────────
-    last_done = _load_checkpoint()
+    last_done, skip_pages = _load_checkpoint()
 
     if SAMPLE_ONLY:
         all_pages = list(range(START_PAGE, END_PAGE + 1))
@@ -406,8 +465,8 @@ def main():
         all_pages = list(range(1, 10000))
         print("Mode: FULL DOCUMENT — this will take ~4 hours")
 
-    # Filter out already-completed pages
-    pages = [p for p in all_pages if p > last_done]
+    # Filter out already-completed pages and permanently-failed pages
+    pages = [p for p in all_pages if p > last_done and p not in skip_pages]
     if not pages:
         print("All pages already processed. Delete ingest_checkpoint.json to restart.")
         return
@@ -436,7 +495,8 @@ def main():
 
     # ── Process in batches — save after each one ──────────────────────────────
     total_text = total_tables = total_images = 0
-    num_batches = (len(pages) + BATCH_SIZE - 1) // BATCH_SIZE
+    num_batches    = (len(pages) + BATCH_SIZE - 1) // BATCH_SIZE
+    last_checkpoint = last_done  # tracks the last page we safely saved
 
     for batch_idx in range(num_batches):
         batch = pages[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
@@ -444,35 +504,35 @@ def main():
               f"(pages {batch[0]}–{batch[-1]})  ━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         try:
-            # Docling extraction
-            elements = extract_elements(converter, PDF_PATH, batch)
+            # extract_elements flushes each page individually — no data lost on crash
+            batch_failed, (bt, bta, bi) = extract_elements(
+                converter, PDF_PATH, batch, file_hash, skip_pages, last_checkpoint
+            )
 
-            # PyMuPDF supplementary formula text pass
-            formula_elements = extract_formula_text(PDF_PATH, batch, elements, file_hash)
-            all_elements     = elements + formula_elements
+            if batch_failed:
+                skip_pages |= set(batch_failed)
+                print(f"  Skipped {len(batch_failed)} failed page(s): {batch_failed}")
 
-            # Separate into text / table / image
-            text_chunks, table_chunks, image_refs = separate(all_elements, file_hash)
+            last_checkpoint  = batch[-1]
+            total_text   += bt
+            total_tables += bta
+            total_images += bi
 
-            # Flush to disk immediately
-            _append_chunks(text_chunks, table_chunks, image_refs)
-
-            # Save checkpoint — this batch is done
-            _save_checkpoint(batch[-1])
-
-            saved_imgs = sum(1 for r in image_refs if r.get("image_path"))
-            total_text   += len(text_chunks)
-            total_tables += len(table_chunks)
-            total_images += len(image_refs)
-
-            print(f"  ✓ text={len(text_chunks)}  tables={len(table_chunks)}  "
-                  f"images={len(image_refs)} ({saved_imgs} saved)  "
-                  f"checkpoint → page {batch[-1]}")
+            print(f"  ✓ batch done  checkpoint → page {batch[-1]}")
 
         except Exception as exc:
-            print(f"\n  ✗ BATCH FAILED at pages {batch[0]}–{batch[-1]}: {exc}")
-            print(f"    Progress saved up to page {batch[0] - 1}.")
-            print(f"    Fix the issue then re-run — it will resume from page {batch[0]}.")
+            new_fails = set(getattr(exc, "failed_pages", []))
+            saved_at  = getattr(exc, "last_good_checkpoint", last_checkpoint)
+            if new_fails:
+                skip_pages |= new_fails
+                print(f"    Adding {len(new_fails)} page(s) to permanent skip list: "
+                      f"{sorted(new_fails)[:20]}")
+
+            _save_checkpoint(saved_at, skip_pages)
+
+            print(f"\n  ✗ STOPPED at pages {batch[0]}–{batch[-1]}: {exc}")
+            print(f"    Progress saved up to page {saved_at}.")
+            print(f"    Re-run to resume — failed pages are now permanently skipped.")
             sys.exit(1)
 
     # ── All batches done — clean up checkpoint ────────────────────────────────

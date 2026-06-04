@@ -11,12 +11,26 @@ from app.observability import splunk
 
 def _strip_llm_scaffolding(text: str) -> str:
     """
-    Remove ## Answer / ## Sources / ## Confidence sections that older prompt
-    versions asked the LLM to output. We build those ourselves in the UI.
+    Remove any source/confidence sections the LLM outputs despite being told not to.
+    Catches both markdown-header formats (## Sources) and plain numbered-list formats
+    ([1] Page X … or References: …) that appear at the end of the answer.
     """
     import re
-    # Drop everything from ## Sources or ## Confidence onward
-    text = re.sub(r'\n##\s+(Sources|Confidence|Source).*', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Drop everything from ## Sources / ## Confidence / ## References onward
+    text = re.sub(
+        r'\n##\s+(Sources?|Confidence|References?|Citations?).*',
+        '', text, flags=re.DOTALL | re.IGNORECASE,
+    )
+    # Drop a trailing numbered reference list: lines starting with [N] Page … or [N] http
+    text = re.sub(
+        r'\n(\[\d+\]\s+(Page|http|https)[^\n]*\n?)+$',
+        '', text, flags=re.IGNORECASE,
+    )
+    # Drop "References:" / "Sources:" label lines and what follows
+    text = re.sub(
+        r'\n(References|Sources|Citations):\s*\n(\[\d+\][^\n]*\n?)*',
+        '', text, flags=re.IGNORECASE,
+    )
     # Strip a leading "## Answer" header if present
     text = re.sub(r'^##\s+Answer\s*\n', '', text, flags=re.IGNORECASE)
     return text.strip()
@@ -45,6 +59,13 @@ def stream_tokens(state: dict):
             "Please try rephrasing, or check that the topic is covered in the corporate finance material."
         )
         return
+
+    # Same sort as generator_node so streaming citations match display order
+    chunks = sorted(
+        chunks,
+        key=lambda c: (c.get("rerank_score") is not None, c.get("rerank_score", 0.0)),
+        reverse=True,
+    )
 
     prompt  = load_prompt("generator")
     history = session_mem.get_history(sid, *_split_prefix(sid)) if sid else []
@@ -94,6 +115,15 @@ def generator_node(state: AgentState) -> dict:
         confidence = 0.0
         sources    = []
     else:
+        # Sort: content chunks (have rerank_score) first by rerank_score desc,
+        # then structure chunks by RRF score desc.
+        # This ensures [1] = most relevant so LLM citations match display order.
+        chunks = sorted(
+            chunks,
+            key=lambda c: (c.get("rerank_score") is not None, c.get("rerank_score", 0.0)),
+            reverse=True,
+        )
+
         prompt = load_prompt("generator")
 
         _t = time.time()
@@ -133,8 +163,14 @@ def generator_node(state: AgentState) -> dict:
         confidence = min(raw_confidence, 0.4) if not context_sufficient else raw_confidence
 
         sources = [
-            {"page": c.get("page"), "section": c.get("section", ""),
-             "source": c.get("source", ""), "score": c.get("score", 0.0)}
+            {
+                "page":         c.get("page"),
+                "section":      c.get("section", ""),
+                "source":       c.get("source", ""),
+                # rerank_score is what ordered the chunks — show it so [1] = highest relevance
+                "score":        c.get("rerank_score", c.get("score", 0.0)),
+                "rrf_score":    c.get("score", 0.0),
+            }
             for c in chunks[:5]
         ]
 

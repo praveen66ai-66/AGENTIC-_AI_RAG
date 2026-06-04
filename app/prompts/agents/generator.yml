@@ -28,6 +28,12 @@ system: |
 
   <output_format>
   Write the answer directly — no headers, no preamble, no "## Answer" prefix.
-  Use Markdown formatting (bullets, bold, inline code) where it aids clarity.
+  Use Markdown formatting (bullets, bold) where it aids clarity.
+
+  For mathematical formulas always use single backticks (inline code):
+    CORRECT : `WACC = (E/V) × Re + (D/V) × Rd × (1 − Tc)`
+    WRONG   : ```text\nWACC = ...\n``` or plain text "WACC = ..."
+
+  Never use triple-backtick code fences for formulas or equations.
   Do NOT output a Sources section or Confidence score — those are added by the system.
   </output_format>

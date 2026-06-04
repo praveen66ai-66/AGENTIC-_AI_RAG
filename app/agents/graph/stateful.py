@@ -315,15 +315,18 @@ def stream(
         for word in answer.split():
             yield {"type": "token", "content": word + " "}
         duration = round((time.time() - started_at) * 1000, 2)
-        session_mem.append_message(prefix, "user",      question, msg_id=f"{idempotency_key}:user")
-        session_mem.append_message(prefix, "assistant", answer,   msg_id=f"{idempotency_key}:asst")
-        store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                       trajectory_id=trajectory_id, role="user", content=question,
-                       idempotency_key=f"{idempotency_key}:user", cache_hit=True, cache_type=cache_type)
-        store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                       trajectory_id=trajectory_id, role="assistant", content=answer,
-                       idempotency_key=f"{idempotency_key}:asst",
-                       confidence=confidence, cache_hit=True, cache_type=cache_type)
+        try:
+            session_mem.append_message(prefix, "user",      question, msg_id=f"{idempotency_key}:user")
+            session_mem.append_message(prefix, "assistant", answer,   msg_id=f"{idempotency_key}:asst")
+            store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                           trajectory_id=trajectory_id, role="user", content=question,
+                           idempotency_key=f"{idempotency_key}:user", cache_hit=True, cache_type=cache_type)
+            store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                           trajectory_id=trajectory_id, role="assistant", content=answer,
+                           idempotency_key=f"{idempotency_key}:asst",
+                           confidence=confidence, cache_hit=True, cache_type=cache_type)
+        except Exception as _e:
+            print(f"[stream] cache-hit memory write failed (non-fatal): {_e}")
         yield {"type": "done", "sources": cached_srcs, "confidence": confidence,
                "duration_ms": duration, "cache_hit": True}
         return
@@ -375,43 +378,72 @@ def stream(
                               session_id=prefix)
 
     sources = [
-        {"page": c.get("page"), "section": c.get("section", ""),
-         "source": c.get("source", ""), "score": c.get("score", 0.0)}
+        {
+            "page":      c.get("page"),
+            "section":   c.get("section", ""),
+            "source":    c.get("source", ""),
+            "score":     c.get("rerank_score", c.get("score", 0.0)),
+            "rrf_score": c.get("score", 0.0),
+        }
         for c in chunks[:5]
     ]
     duration = round((time.time() - started_at) * 1000, 2)
 
-    # ── Memory + audit writes (same as run()) ─────────────────────────────────
-    session_mem.append_message(prefix, "user",      question,    msg_id=f"{idempotency_key}:user")
-    session_mem.append_message(prefix, "assistant", full_answer, msg_id=f"{idempotency_key}:asst")
-    store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                   trajectory_id=trajectory_id, role="user", content=question,
-                   idempotency_key=f"{idempotency_key}:user")
-    store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                   trajectory_id=trajectory_id, role="assistant", content=full_answer,
-                   idempotency_key=f"{idempotency_key}:asst",
-                   sources=sources, confidence=confidence)
-    topic   = _extract_topic(question)
-    fact_id = hashlib.md5(f"{tenant_id}:{user_id}:{topic}".encode()).hexdigest()
-    store.store_semantic_fact(tenant_id=tenant_id, user_id=user_id, fact_type="topic",
-                              subject=topic, content=question, source_session=session_id,
-                              confidence=confidence, idempotency_key=f"topic:{fact_id}")
-    citation_summary = ", ".join(f"p{s.get('page')} {s.get('section','')}" for s in sources[:3])
-    store.log_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                    trajectory_id=trajectory_id, query=question,
-                    idempotency_key=f"{idempotency_key}:query",
-                    plan=plan, retrieved=citation_summary, answer=full_answer,
-                    iteration_count=mid_state.get("iteration_count", 0),
-                    duration_ms=duration, confidence=confidence, cache_hit=False)
-    if full_answer and confidence >= 0.4:
-        semantic_cache.store(tenant_id, user_id, question, full_answer, confidence, sources=sources)
+    # ── Memory + audit writes ─────────────────────────────────────────────────
+    # Each write is isolated in its own try/except so a single Redis timeout or
+    # PG connection error cannot prevent the done event from reaching the UI.
+    try:
+        session_mem.append_message(prefix, "user",      question,    msg_id=f"{idempotency_key}:user")
+        session_mem.append_message(prefix, "assistant", full_answer, msg_id=f"{idempotency_key}:asst")
+    except Exception as _e:
+        print(f"[stream] Redis append failed (non-fatal): {_e}")
 
-    splunk.rag_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
-                     trajectory_id=trajectory_id, question_length=len(question),
-                     answer_length=len(full_answer), confidence=confidence,
-                     cache_hit=False, cache_type=None,
-                     iteration_count=mid_state.get("iteration_count", 0),
-                     duration_ms=duration, source_count=len(sources))
+    try:
+        store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                       trajectory_id=trajectory_id, role="user", content=question,
+                       idempotency_key=f"{idempotency_key}:user")
+        store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                       trajectory_id=trajectory_id, role="assistant", content=full_answer,
+                       idempotency_key=f"{idempotency_key}:asst",
+                       sources=sources, confidence=confidence)
+    except Exception as _e:
+        print(f"[stream] PG log_turn failed (non-fatal): {_e}")
+
+    try:
+        topic   = _extract_topic(question)
+        fact_id = hashlib.md5(f"{tenant_id}:{user_id}:{topic}".encode()).hexdigest()
+        store.store_semantic_fact(tenant_id=tenant_id, user_id=user_id, fact_type="topic",
+                                  subject=topic, content=question, source_session=session_id,
+                                  confidence=confidence, idempotency_key=f"topic:{fact_id}")
+    except Exception as _e:
+        print(f"[stream] PG store_semantic_fact failed (non-fatal): {_e}")
+
+    try:
+        citation_summary = ", ".join(f"p{s.get('page')} {s.get('section','')}" for s in sources[:3])
+        store.log_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                        trajectory_id=trajectory_id, query=question,
+                        idempotency_key=f"{idempotency_key}:query",
+                        plan=plan, retrieved=citation_summary, answer=full_answer,
+                        iteration_count=mid_state.get("iteration_count", 0),
+                        duration_ms=duration, confidence=confidence, cache_hit=False)
+    except Exception as _e:
+        print(f"[stream] PG log_query failed (non-fatal): {_e}")
+
+    try:
+        if full_answer and confidence >= 0.4:
+            semantic_cache.store(tenant_id, user_id, question, full_answer, confidence, sources=sources)
+    except Exception as _e:
+        print(f"[stream] semantic_cache.store failed (non-fatal): {_e}")
+
+    try:
+        splunk.rag_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+                         trajectory_id=trajectory_id, question_length=len(question),
+                         answer_length=len(full_answer), confidence=confidence,
+                         cache_hit=False, cache_type=None,
+                         iteration_count=mid_state.get("iteration_count", 0),
+                         duration_ms=duration, source_count=len(sources))
+    except Exception as _e:
+        print(f"[stream] Splunk rag_query failed (non-fatal): {_e}")
 
     total_tok    = sum(v.get("total", 0) for v in mid_state.get("stage_tokens", {}).values() if isinstance(v, dict))
     node_t       = mid_state.get("node_timings", {})

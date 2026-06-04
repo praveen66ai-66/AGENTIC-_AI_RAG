@@ -9,9 +9,15 @@ Model selection (RERANKER_MODEL env var):
 Disable entirely: RERANKER_ENABLED=false  (falls back to RRF score ordering)
 """
 
+import math
 import os
 
 from sentence_transformers import CrossEncoder
+
+
+def _sigmoid(x: float) -> float:
+    """Convert raw cross-encoder logit to a 0–1 relevance probability."""
+    return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, x))))
 
 _model:   CrossEncoder | None = None
 _ENABLED: bool = os.getenv("RERANKER_ENABLED", "true").lower() != "false"
@@ -29,9 +35,12 @@ def _get_model() -> CrossEncoder:
 
 
 def warmup() -> None:
-    """Load the cross-encoder at startup so the first real request isn't slow."""
+    """Load the cross-encoder and run a dummy prediction at startup.
+    Without the dummy predict, PyTorch JIT-compiles on the first real request
+    which adds ~15-18s to that call's latency."""
     if _ENABLED:
-        _get_model()
+        model = _get_model()
+        model.predict([("warmup query", "warmup document")], show_progress_bar=False)
 
 
 def rerank(query: str, chunks: list[dict], top_k: int = 5) -> list[dict]:
@@ -59,7 +68,7 @@ def rerank(query: str, chunks: list[dict], top_k: int = 5) -> list[dict]:
             reverse=True,
         )
         return [
-            {**chunk, "rerank_score": round(float(score), 4)}
+            {**chunk, "rerank_score": round(_sigmoid(float(score)), 4)}
             for score, chunk in ranked[:top_k]
         ]
 

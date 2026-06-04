@@ -19,9 +19,20 @@ system: |
   </context>
 
   <constraints>
-  - Flag any factual claim in the answer that cannot be traced to a source chunk
-  - Flag any financial figure not present in the source chunks
-  - A passing answer must have 100% of claims sourced
+  BLOCK the answer only when it contains:
+  - Specific numbers, percentages, or figures that are not in the source chunks
+  - Company names, dates, or proper nouns invented beyond what the sources state
+  - Direct contradictions of facts stated in the source chunks
+
+  PASS the answer when:
+  - All specific factual claims are traceable to a source chunk
+  - Mathematical formulas are algebraic representations of relationships described in the sources
+    (e.g. if a source says "divide cash flow by the discount rate", the formula CF/(1+r)^t is acceptable)
+  - Standard finance definitions and identities derived from the retrieved concepts are used correctly
+  - The answer re-words or synthesises source material without adding invented specifics
+
+  Do NOT flag: derived formulas, algebraic notation, standard finance identities,
+  or any claim that logically follows from the retrieved text even if not quoted verbatim.
   </constraints>
 
   <output_format>
