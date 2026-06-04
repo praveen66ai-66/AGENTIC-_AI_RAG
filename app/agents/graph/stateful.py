@@ -88,10 +88,11 @@ def run(
     cached = semantic_cache.check(tenant_id, user_id, question)
     _outer_timings["redis_cache_check_ms"] = round((time.time() - _t) * 1000, 2)
     if cached:
-        answer     = cached["answer"]
-        confidence = cached["confidence"]
-        cache_type = cached["cache_type"]
-        duration   = round((time.time() - started_at) * 1000, 2)
+        answer      = cached["answer"]
+        confidence  = cached["confidence"]
+        cache_type  = cached["cache_type"]
+        cached_srcs = cached.get("sources", [])
+        duration    = round((time.time() - started_at) * 1000, 2)
 
         # Working memory (Redis)
         session_mem.append_message(prefix, "user",      question, msg_id=f"{idempotency_key}:user")
@@ -122,7 +123,7 @@ def run(
 
         result = {
             "answer":             answer,
-            "sources":            [],
+            "sources":            cached_srcs,
             "confidence":         confidence,
             "plan":               [],
             "iteration_count":    0,
@@ -225,7 +226,7 @@ def run(
     # ── 8. Semantic cache store ───────────────────────────────────────────────
     _t = time.time()
     if answer and confidence >= 0.4:
-        semantic_cache.store(tenant_id, user_id, question, answer, confidence)
+        semantic_cache.store(tenant_id, user_id, question, answer, confidence, sources=sources)
     _outer_timings["redis_cache_store_ms"] = round((time.time() - _t) * 1000, 2)
 
     # Merge outer timings with per-node timings from the graph
@@ -302,9 +303,10 @@ def stream(
     # ── Cache hit: stream cached answer word-by-word ──────────────────────────
     cached = semantic_cache.check(tenant_id, user_id, question)
     if cached:
-        answer     = cached["answer"]
-        confidence = cached["confidence"]
-        cache_type = cached["cache_type"]
+        answer      = cached["answer"]
+        confidence  = cached["confidence"]
+        cache_type  = cached["cache_type"]
+        cached_srcs = cached.get("sources", [])
         yield {"type": "metadata", "plan": [], "confidence": confidence,
                "cache_hit": True, "cache_type": cache_type}
         for word in answer.split():
@@ -319,7 +321,7 @@ def stream(
                        trajectory_id=trajectory_id, role="assistant", content=answer,
                        idempotency_key=f"{idempotency_key}:asst",
                        confidence=confidence, cache_hit=True, cache_type=cache_type)
-        yield {"type": "done", "sources": [], "confidence": confidence,
+        yield {"type": "done", "sources": cached_srcs, "confidence": confidence,
                "duration_ms": duration, "cache_hit": True}
         return
 
@@ -399,7 +401,7 @@ def stream(
                     iteration_count=mid_state.get("iteration_count", 0),
                     duration_ms=duration, confidence=confidence, cache_hit=False)
     if full_answer and confidence >= 0.4:
-        semantic_cache.store(tenant_id, user_id, question, full_answer, confidence)
+        semantic_cache.store(tenant_id, user_id, question, full_answer, confidence, sources=sources)
 
     splunk.rag_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
                      trajectory_id=trajectory_id, question_length=len(question),

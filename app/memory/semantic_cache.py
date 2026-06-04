@@ -22,10 +22,19 @@ Why per user (not per session):
 
 import hashlib
 import json
+import re
 import time
 from typing import Optional
 
 import numpy as np
+
+
+def _clean(answer: str) -> str:
+    """Strip ## Sources / ## Confidence scaffolding the LLM used to emit."""
+    answer = re.sub(r'\n##\s+(Sources|Confidence|Source).*', '', answer,
+                    flags=re.DOTALL | re.IGNORECASE)
+    answer = re.sub(r'^##\s+Answer\s*\n', '', answer, flags=re.IGNORECASE)
+    return answer.strip()
 
 _CACHE_TTL     = 86400   # 24 hours
 _MAX_ENTRIES   = 100     # per user
@@ -81,10 +90,11 @@ def check(
     if exact_raw:
         entry = json.loads(exact_raw)
         return {
-            "answer":     entry["answer"],
+            "answer":     _clean(entry["answer"]),
             "confidence": entry["confidence"],
             "cache_type": "exact",
             "similarity": 1.0,
+            "sources":    entry.get("sources", []),
         }
 
     # ── Pass 2: semantic similarity O(N) ─────────────────────────────────────
@@ -105,10 +115,11 @@ def check(
 
     if best_sim >= threshold and best_entry:
         return {
-            "answer":     best_entry["answer"],
+            "answer":     _clean(best_entry["answer"]),
             "confidence": best_entry["confidence"],
             "cache_type": "semantic",
             "similarity": round(best_sim, 4),
+            "sources":    best_entry.get("sources", []),
         }
 
     return None
@@ -120,6 +131,7 @@ def store(
     question:   str,
     answer:     str,
     confidence: float = 0.5,
+    sources:    list  = None,
 ) -> None:
     """
     Cache the answer for this question.
@@ -135,9 +147,10 @@ def store(
     embedding = _embed.encode(question).tolist()
     entry = {
         "question":   question,
-        "answer":     answer,
+        "answer":     _clean(answer),   # strip scaffolding before storing
         "embedding":  embedding,
         "confidence": confidence,
+        "sources":    sources or [],
         "ts":         time.time(),
     }
 
