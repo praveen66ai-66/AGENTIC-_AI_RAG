@@ -1,8 +1,11 @@
 """POST /api/v1/query — retrieval endpoint with citations and guardrails."""
 
+import logging
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger(__name__)
 
 UAE_TZ = timezone(timedelta(hours=4))  # Gulf Standard Time, UTC+4
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +25,8 @@ _SCORE_THRESHOLD = 0.4   # minimum RRF score to include a chunk in the response
 
 @router.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest, ctx: RequestContext = Depends(get_context)):
-    started_at = time.time()
+    started_at   = time.time()
+    request_id   = str(uuid.uuid4())   # stable for this request — used for idempotency + tracing
 
     # ── Guardrail check ───────────────────────────────────────────────────────
     # Blocked queries stop here — Qdrant, Redis, and PostgreSQL are never touched.
@@ -39,8 +43,18 @@ def query(req: QueryRequest, ctx: RequestContext = Depends(get_context)):
         raise HTTPException(status_code=400, detail=result.reason)
 
     # ── Hybrid retrieval (RRF fusion) ─────────────────────────────────────────
-    raw_content   = hybrid_search(req.question, "finance_content",   top_k=req.top_k)
-    raw_structure = hybrid_search(req.question, "finance_structure", top_k=2)
+    try:
+        raw_content   = hybrid_search(req.question, "finance_content",   top_k=req.top_k)
+        raw_structure = hybrid_search(req.question, "finance_structure", top_k=2)
+    except Exception as exc:
+        logger.exception("Qdrant retrieval failed")
+        splunk.node_step(
+            node="query_route", phase="qdrant_error",
+            session_id=ctx.session_id,
+            duration_ms=round((time.time() - started_at) * 1000, 2),
+            error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="Retrieval service unavailable. Please try again.")
 
     # Deduplicate and assign citation numbers
     seen:      set[str]            = set()
@@ -94,7 +108,7 @@ def query(req: QueryRequest, ctx: RequestContext = Depends(get_context)):
         session_id=ctx.session_id,
         query=req.question,
         retrieved=citation_summary,
-        idempotency_key=str(uuid.uuid4()),
+        idempotency_key=request_id,
         duration_ms=duration_ms,
     )
     splunk.retrieval_query(

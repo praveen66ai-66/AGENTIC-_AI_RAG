@@ -230,31 +230,186 @@ def merge_text_chunks(
 
 # ── Table chunking ────────────────────────────────────────────────────────────
 
-def process_table(chunk: dict) -> dict | None:
-    table_md = chunk.get("table_markdown", "").strip()
-    if not table_md:
+_ROWS_PER_CHUNK = 5   # rows per NL-sentence chunk
+
+
+def _parse_markdown_table(table_md: str) -> tuple[str, list[str], list[list[str]]]:
+    """
+    Parse a markdown table into (title, headers, data_rows).
+
+    title      — first non-pipe, non-blank line (e.g. 'Brazil (in €bn)')
+    headers    — column names, deduplicated with _1/_2 suffix when repeated
+    data_rows  — list of cell-value lists, one per body row
+    """
+    title   = ""
+    headers: list[str] = []
+    rows:    list[list[str]] = []
+
+    for line in table_md.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if not s.startswith("|"):
+            if not title:
+                title = s
+            continue
+        if all(c in "|-: " for c in s):   # separator row
+            continue
+        cells = [c.strip() for c in s.split("|") if c.strip() != ""]
+        if not headers:
+            # Build deduplicated header list
+            seen: dict[str, int] = {}
+            for c in cells:
+                if c in seen:
+                    seen[c] += 1
+                    headers.append(f"{c}_{seen[c]}")
+                else:
+                    seen[c] = 0
+                    headers.append(c)
+        else:
+            rows.append(cells)
+
+    return title, headers, rows
+
+
+def _row_to_sentence(title: str, headers: list[str], cells: list[str]) -> str:
+    """
+    Serialize one table row as a natural-language sentence.
+
+    Example output:
+        'Brazil (in €bn) — Ambev: Market Capitalisation 87, Beta 0.18, P/E ratio 2014 20.6.'
+    """
+    _SKIP = {"n.s.", "na", "-", ""}
+    pairs = []
+    for h, v in zip(headers, cells):
+        v = v.strip()
+        if v.lower() not in _SKIP:
+            pairs.append(f"{h} {v}")
+    body = ", ".join(pairs)
+    return f"{title} — {body}." if title else f"{body}."
+
+
+def _table_summary(
+    title: str, headers: list[str], rows: list[list[str]],
+    prefix: str, page, section: str, fh: str, is_ex: bool,
+) -> dict | None:
+    """
+    Build one summary chunk per table for high-level semantic queries.
+
+    Covers: table name, row count, all entity names, numeric ranges.
+    A query like 'top companies in Brazil' or 'what is in the Brazil table'
+    hits this chunk directly without needing to rank across row-batch chunks.
+    """
+    if not rows or not headers:
         return None
 
-    section  = chunk.get("section", "")
-    intro    = chunk.get("intro_text", "").strip()
-    prefix   = f"[{section}]\n" if section else ""
-    fh       = chunk.get("file_hash", "")
-    is_ex    = chunk.get("is_exercise", False)
+    # Identify the entity-name column: most unique non-numeric values
+    name_col = 0
+    max_unique = 0
+    for i in range(len(headers)):
+        vals = {r[i] for r in rows if i < len(r)}
+        non_num = {v for v in vals if v and not v.replace(".", "").replace("-", "").isnumeric()}
+        if len(non_num) > max_unique:
+            max_unique, name_col = len(non_num), i
 
-    full = f"{prefix}{intro}\n\n{table_md}".strip() if intro else f"{prefix}{table_md}".strip()
-    if len(full) > MAX_CHUNK_CHARS:
-        full = f"{prefix}{table_md}".strip()
+    entities = [r[name_col].strip() for r in rows if name_col < len(r) and r[name_col].strip()]
 
+    # Numeric ranges for up to 5 columns
+    ranges: list[str] = []
+    for i, h in enumerate(headers):
+        nums: list[float] = []
+        for r in rows:
+            if i < len(r):
+                try:
+                    nums.append(float(r[i].replace(",", "").replace(" ", "")))
+                except ValueError:
+                    pass
+        if nums:
+            ranges.append(f"{h}: {min(nums):.4g}–{max(nums):.4g}")
+        if len(ranges) == 5:
+            break
+
+    lines: list[str] = []
+    if title:
+        lines.append(f"Summary — {title}")
+    lines.append(f"Entries: {len(rows)}. Columns: {', '.join(headers)}.")
+    if entities:
+        lines.append(f"Entities listed: {', '.join(entities)}.")
+    if ranges:
+        lines.append(f"Numeric ranges — {'; '.join(ranges)}.")
+
+    text = (prefix + "\n".join(lines)).strip()
     return _make_point(
-        text=full,
-        page=chunk.get("page"),
+        text=text,
+        page=page,
         section=section,
         source="table",
         content_type="table",
-        item_type="TableItem",
+        item_type="TableSummary",
         file_hash=fh,
         is_exercise=is_ex,
     )
+
+
+def process_table(chunk: dict) -> list[dict]:
+    """
+    Convert one raw table chunk into one or more index points.
+
+    Strategy (highest-impact for semantic retrieval):
+    - Parse markdown into title + column headers + data rows
+    - Convert each row to a natural-language sentence
+    - Group every ROWS_PER_CHUNK rows into one chunk, each prefixed with
+      'Table: <title>\\nColumns: <headers>' so context is never lost
+    - Falls back to the raw markdown when the table cannot be parsed
+
+    Returns a list (may be empty); replaces the old dict | None return type.
+    Old table chunks in Qdrant must be purged before uploading (IDs changed).
+    """
+    table_md = chunk.get("table_markdown", "").strip()
+    if not table_md:
+        return []
+
+    section = chunk.get("section", "")
+    fh      = chunk.get("file_hash", "")
+    is_ex   = chunk.get("is_exercise", False)
+    page    = chunk.get("page")
+    prefix  = f"[{section}]\n" if section else ""
+
+    title, headers, rows = _parse_markdown_table(table_md)
+
+    # Context block prepended to every row-batch chunk
+    col_str = ", ".join(headers)
+    ctx = f"Table: {title}\nColumns: {col_str}\n\n" if title else f"Columns: {col_str}\n\n"
+
+    if not rows:
+        # Unparseable — fall back to raw markdown with context block
+        text = f"{prefix}{ctx}{table_md}".strip()
+        return [_make_point(text=text, page=page, section=section, source="table",
+                            content_type="table", item_type="TableItem",
+                            file_hash=fh, is_exercise=is_ex)]
+
+    # ── Summary chunk (Point 3) ───────────────────────────────────────────────
+    # One high-level chunk per table that answers broad queries like
+    # "top companies in Brazil" without needing to rank across row batches.
+    summary_pt = _table_summary(title, headers, rows, prefix, page, section, fh, is_ex)
+
+    # ── Row-batch chunks ─────────────────────────────────────────────────────
+    points: list[dict] = [summary_pt] if summary_pt else []
+    for batch_start in range(0, len(rows), _ROWS_PER_CHUNK):
+        batch     = rows[batch_start : batch_start + _ROWS_PER_CHUNK]
+        sentences = "\n".join(_row_to_sentence(title, headers, r) for r in batch)
+        text      = f"{prefix}{ctx}{sentences}".strip()
+        points.append(_make_point(
+            text=text,
+            page=page,
+            section=section,
+            source="table",
+            content_type="table",
+            item_type="TableItem",
+            file_hash=fh,
+            is_exercise=is_ex,
+        ))
+    return points
 
 
 # ── Image chunking ────────────────────────────────────────────────────────────
@@ -300,8 +455,7 @@ def load_chunks() -> tuple[list[dict], list[dict], list[dict], list[dict], list[
     table_chunks:    list[dict] = []
     exercise_tables: list[dict] = []
     for chunk in raw_tables:
-        pt = process_table(chunk)
-        if pt:
+        for pt in process_table(chunk):   # process_table now returns list[dict]
             (exercise_tables if pt["metadata"]["is_exercise"] else table_chunks).append(pt)
 
     exercise_chunks = exercise_text + exercise_tables
@@ -335,6 +489,28 @@ def load_chunks() -> tuple[list[dict], list[dict], list[dict], list[dict], list[
 
 
 # ── Qdrant helpers ────────────────────────────────────────────────────────────
+
+def _purge_old_table_chunks(client) -> None:
+    """
+    Delete all content_type='table' points from finance_content before re-uploading.
+
+    Row-to-sentence chunking changes chunk IDs (one table → many chunks), so old
+    single-table chunks would persist as stale duplicates if not explicitly removed.
+    Text and image chunks are unaffected — only table points are purged here.
+    """
+    from qdrant_client.models import Filter, FieldCondition, MatchValue, FilterSelector
+    try:
+        client.delete(
+            collection_name=COLLECTION_CONTENT,
+            points_selector=FilterSelector(
+                filter=Filter(must=[FieldCondition(key="content_type",
+                                                   match=MatchValue(value="table"))])
+            ),
+        )
+        print(f"  Purged old table chunks from '{COLLECTION_CONTENT}'")
+    except Exception as exc:
+        print(f"  [warn] Could not purge old table chunks: {exc}")
+
 
 def ensure_collection(client, name: str, dense_size: int, VectorParams, Distance,
                       SparseVectorParams, SparseIndexParams) -> None:
@@ -454,6 +630,10 @@ def main():
     for name in [COLLECTION_CONTENT, COLLECTION_EXERCISES, COLLECTION_STRUCTURE]:
         ensure_collection(client, name, DENSE_SIZE,
                           VectorParams, Distance, SparseVectorParams, SparseIndexParams)
+
+    # ── Purge old table chunks before re-uploading with new row-sentence IDs ─────
+    print("\nPurging stale table chunks (row-to-sentence IDs changed):")
+    _purge_old_table_chunks(client)
 
     # ── Embed + upsert ────────────────────────────────────────────────────────
     for col, pts in [

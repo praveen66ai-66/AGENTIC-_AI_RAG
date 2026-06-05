@@ -27,12 +27,15 @@ Connection pooling
 """
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+
+logger = logging.getLogger(__name__)
 from psycopg2.pool import ThreadedConnectionPool
 
 _pool: Optional[ThreadedConnectionPool] = None
@@ -203,8 +206,8 @@ def upsert_session(
                         query_count    = sessions.query_count + 1,
                         total_tokens   = sessions.total_tokens + EXCLUDED.total_tokens
                 """, (tenant_id, user_id, session_id, tokens))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("upsert_session failed (non-fatal): %s", exc)
 
 
 # ── Episodic memory ───────────────────────────────────────────────────────────
@@ -251,8 +254,8 @@ def log_turn(
                     cache_type,
                     idempotency_key,
                 ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("log_turn failed (non-fatal): %s", exc)
 
 
 def get_episodic_history(
@@ -280,7 +283,8 @@ def get_episodic_history(
                 """, (tenant_id, user_id, session_id, limit))
                 rows = cur.fetchall()
                 return list(reversed([dict(r) for r in rows]))
-    except Exception:
+    except Exception as exc:
+        logger.debug("get_episodic_history failed: %s", exc)
         return []
 
 
@@ -305,7 +309,8 @@ def get_cross_session_history(
                     LIMIT  %s
                 """, (tenant_id, user_id, limit))
                 return list(reversed([dict(r) for r in cur.fetchall()]))
-    except Exception:
+    except Exception as exc:
+        logger.debug("get_cross_session_history failed: %s", exc)
         return []
 
 
@@ -344,8 +349,8 @@ def store_semantic_fact(
                     tenant_id, user_id, fact_type, subject, content,
                     source_session, confidence, idempotency_key,
                 ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("store_semantic_fact failed (non-fatal): %s", exc)
 
 
 def get_semantic_profile(
@@ -377,7 +382,8 @@ def get_semantic_profile(
                         ORDER  BY created_at DESC LIMIT %s
                     """, (tenant_id, user_id, limit))
                 return [dict(r) for r in cur.fetchall()]
-    except Exception:
+    except Exception as exc:
+        logger.debug("get_semantic_profile failed: %s", exc)
         return []
 
 
@@ -415,7 +421,7 @@ def log_query(
                          duration_ms, confidence, cache_hit, cache_type,
                          token_usage, total_tokens, idempotency_key)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (idempotency_key) DO NOTHING
+                    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
                 """, (
                     tenant_id, user_id, session_id, trajectory_id,
                     query,
@@ -428,8 +434,8 @@ def log_query(
                     total_tokens,
                     idempotency_key,
                 ))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("log_query failed (non-fatal): %s", exc)
 
 
 def get_query_history(
@@ -448,7 +454,8 @@ def get_query_history(
                     ORDER  BY created_at DESC LIMIT %s
                 """, (tenant_id, user_id, limit))
                 return [dict(r) for r in cur.fetchall()]
-    except Exception:
+    except Exception as exc:
+        logger.debug("get_query_history failed: %s", exc)
         return []
 
 

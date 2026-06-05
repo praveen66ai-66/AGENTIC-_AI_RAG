@@ -11,6 +11,7 @@ The generator node appends the reason as a warning rather than suppressing
 the answer entirely, preserving utility while flagging quality issues.
 """
 
+import logging
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -19,6 +20,8 @@ from langchain_core.messages import SystemMessage
 from langchain_groq import ChatGroq
 
 from app.agents._utils import format_chunks, load_guardrail_prompt, parse_json
+
+logger = logging.getLogger(__name__)
 
 
 class Decision(str, Enum):
@@ -64,8 +67,9 @@ def check(answer: str, chunks: list[dict]) -> GuardResult:
     try:
         response = _get_llm().invoke([SystemMessage(content=system_text)])
         parsed   = parse_json(response.content)
-    except Exception:
-        # Never block on guardrail failure — fail open
+    except Exception as exc:
+        # Never block on guardrail failure — fail open (intentional)
+        logger.warning("output_guard LLM call failed, failing open: %s", exc)
         return GuardResult(Decision.PASS)
 
     if not parsed.get("passes", True):

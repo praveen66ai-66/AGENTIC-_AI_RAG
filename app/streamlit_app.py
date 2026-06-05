@@ -11,8 +11,8 @@ import uuid
 import requests
 import streamlit as st
 
-API_BASE = "http://localhost:8000/api/v1"
-HEALTH   = "http://localhost:8000/health"
+API_BASE = "http://127.0.0.1:8000/api/v1"
+HEALTH   = "http://127.0.0.1:8000/health"
 
 
 def _stream_agent(question: str, headers: dict):
@@ -301,10 +301,10 @@ with st.sidebar:
     # Service status
     st.markdown('<div class="sidebar-section"><h4>Services</h4>', unsafe_allow_html=True)
     services = [
-        ("PostgreSQL", health.get("postgres", False), "🗄️"),
-        ("Redis",      health.get("redis",    False), "⚡"),
-        ("Qdrant",     bool(health),                  "🔍"),
-        ("LLM Agent",  bool(health),                  "🤖"),
+        ("PostgreSQL", health.get("postgres",  False), "🗄️"),
+        ("Redis",      health.get("redis",     False), "⚡"),
+        ("Qdrant",     health.get("qdrant",    False), "🔍"),
+        ("LLM Agent",  health.get("llm_ready", False), "🤖"),
     ]
     for name, ok, icon in services:
         label  = "Ready" if ok else "Offline"
@@ -463,18 +463,26 @@ if question:
                     key=lambda s: float(s.get("score") or 0.0),
                     reverse=True,
                 )
-                cite_html = '<div class="citations-box"><h5>📎 Sources Used</h5>'
+                cite_html = '<div class="citations-box"><h5>&#128206; Sources Used</h5>'
                 for i, s in enumerate(sources_sorted, 1):
-                    section  = (s.get("section") or "—")[:60]
+                    page     = s.get("page") or "?"
+                    section  = (s.get("section") or "")[:60].strip() or "—"
                     score    = float(s.get("score") or 0.0)
+                    excerpt  = (s.get("excerpt") or "").strip()
                     # Clamp to 0–1 in case raw logits slipped through, then show as %
                     pct      = min(score, 1.0) * 100 if score <= 1.0 else 100.0
+                    excerpt_html = (
+                        f'<div style="font-size:11px;color:#78909c;margin-top:4px;'
+                        f'padding-left:38px;font-style:italic;">'
+                        f'&ldquo;{excerpt[:120]}{"..." if len(excerpt)>120 else ""}&rdquo;</div>'
+                    ) if excerpt else ""
                     cite_html += (
-                        f'<div class="cite-item">'
+                        f'<div class="cite-item" style="flex-wrap:wrap;">'
                         f'<span class="cite-num">[{i}]</span>'
-                        f'<span class="cite-info">Page {s.get("page","?")} &nbsp;·&nbsp; '
-                        f'{section} &nbsp;·&nbsp; '
+                        f'<span class="cite-info">Page {page} &nbsp;&middot;&nbsp; '
+                        f'{section} &nbsp;&middot;&nbsp; '
                         f'<b>{pct:.1f}%</b></span></div>'
+                        f'{excerpt_html}'
                     )
                 cite_html += "</div>"
                 st.markdown(cite_html, unsafe_allow_html=True)

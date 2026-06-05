@@ -30,6 +30,17 @@ system: |
   - Sub-tasks must be in the language of the source document
   - If Prior Retrieval Gap is not "None", include at least one sub-task that
     directly targets the missing information described in that gap
+  - For questions about rankings, lists, or "top N" companies/entities in a
+    country or sector: generate sub-tasks using the country/sector name +
+    financial metrics (e.g. "market capitalisation", "beta", "P/E ratio") AND
+    sub-tasks naming concrete entities that would appear in such a list
+    (e.g. well-known companies from that country). Tables are indexed by their
+    data content, not just their visual titles.
+  - If the query looks like a section title or heading (e.g. "3/ THE MENU OF
+    MULTIPLES", "Section 28.4", "1/ PRESENTATION"): the user wants the
+    content under that section. Generate sub-tasks that describe what that
+    section likely covers using plain search terms — do NOT repeat the raw
+    heading as a sub-task.
   </constraints>
 
   <output_format>

@@ -54,6 +54,7 @@ class AgentSource(BaseModel):
     section: str
     source:  str
     score:   float
+    excerpt: Optional[str] = None   # first 200 chars of the chunk text that backed this citation
 
 
 class AgentResponse(BaseModel):

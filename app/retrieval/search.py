@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient
-from qdrant_client.models import FusionQuery, Fusion, Prefetch, SparseVector
+from qdrant_client.models import FusionQuery, Fusion, Prefetch, SparseVector, Filter, FieldCondition, MatchValue
 from sentence_transformers import SentenceTransformer
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -73,6 +73,21 @@ def _query_qdrant(collection: str, prefetch: list, query, limit: int):
     ).points
 
 
+def ping() -> bool:
+    """Return True if Qdrant is reachable (used by /health).
+    Uses a separate short-timeout client so /health never blocks > 5s."""
+    try:
+        QdrantClient(
+            url=os.getenv("QDRANT_URL"),
+            api_key=os.getenv("QDRANT_API_KEY"),
+            timeout=5,
+            check_compatibility=False,
+        ).get_collections()
+        return True
+    except Exception:
+        return False
+
+
 def hybrid_search(query: str, collection: str, top_k: int = 5) -> list[dict]:
     """
     Hybrid dense+sparse search with RRF fusion.
@@ -100,11 +115,63 @@ def hybrid_search(query: str, collection: str, top_k: int = 5) -> list[dict]:
         book_page = _to_book_page(pdf_page)
         results.append({
             "text":       r.payload.get("text", ""),
-            "page":       book_page,   # printed book page shown in citations
-            "pdf_page":   pdf_page,    # raw PDF page kept for debugging
+            "page":       book_page,
+            "pdf_page":   pdf_page,
             "section":    r.payload.get("section", ""),
             "source":     r.payload.get("source", ""),
             "score":      round(r.score, 4),
             "collection": collection,
+        })
+    return results
+
+
+def section_lookup(query: str, section_name: str, top_k: int = 6) -> list[dict]:
+    """
+    Fetch content chunks whose section metadata exactly matches section_name,
+    ranked by dense similarity to query.
+
+    Used when the query is a section title (e.g. '3/ THE MENU OF MULTIPLES') —
+    the structure collection returns the header but not the body paragraphs.
+    This call fetches those body paragraphs directly via a payload filter.
+    """
+    if not section_name or not section_name.strip():
+        return []
+
+    dense_vec = _embed.encode(query).tolist()
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    def _filtered_query():
+        return _qdrant.query_points(
+            collection_name="finance_content",
+            query=dense_vec,
+            using="dense",
+            query_filter=Filter(
+                must=[FieldCondition(key="section", match=MatchValue(value=section_name))]
+            ),
+            limit=top_k,
+        ).points
+
+    try:
+        points = _filtered_query()
+    except Exception:
+        return []
+
+    results = []
+    for r in points:
+        pdf_page  = r.payload.get("page")
+        book_page = _to_book_page(pdf_page)
+        results.append({
+            "text":       r.payload.get("text", ""),
+            "page":       book_page,
+            "pdf_page":   pdf_page,
+            "section":    r.payload.get("section", ""),
+            "source":     r.payload.get("source", ""),
+            "score":      round(r.score, 4),
+            "collection": "finance_content",
         })
     return results

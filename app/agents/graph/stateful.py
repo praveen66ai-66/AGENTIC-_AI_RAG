@@ -30,11 +30,15 @@ from datetime import datetime, timezone, timedelta
 # UAE — Gulf Standard Time (UTC+4, no daylight saving)
 UAE_TZ = timezone(timedelta(hours=4))
 
+import logging
+
 from app.agents.graph.builder import rag_graph, pre_graph
 from app.memory import semantic_cache
 from app.memory import session as session_mem
 from app.memory import store
 from app.observability import splunk
+
+logger = logging.getLogger(__name__)
 
 _IDEM_TTL = 300   # seconds — covers any realistic client retry window
 
@@ -168,8 +172,17 @@ def run(
         "node_timings":       {},
     }
 
-    config      = {"configurable": {"thread_id": session_id}}
-    final_state = rag_graph.invoke(initial_state, config=config)
+    config = {"configurable": {"thread_id": session_id}}
+    try:
+        final_state = rag_graph.invoke(initial_state, config=config)
+    except Exception as exc:
+        logger.exception("rag_graph.invoke failed")
+        splunk.node_step(
+            node="pipeline", phase="error",
+            trajectory_id=trajectory_id, session_id=prefix,
+            error=type(exc).__name__, detail=str(exc)[:200],
+        )
+        raise
 
     # Persist retrieval gap so the planner can address it on the next question
     last_gap = final_state.get("retrieval_gap", "")
@@ -326,7 +339,7 @@ def stream(
                            idempotency_key=f"{idempotency_key}:asst",
                            confidence=confidence, cache_hit=True, cache_type=cache_type)
         except Exception as _e:
-            print(f"[stream] cache-hit memory write failed (non-fatal): {_e}")
+            logger.warning("[stream] cache-hit memory write failed (non-fatal): %s", _e)
         yield {"type": "done", "sources": cached_srcs, "confidence": confidence,
                "duration_ms": duration, "cache_hit": True}
         return
@@ -384,6 +397,7 @@ def stream(
             "source":    c.get("source", ""),
             "score":     c.get("rerank_score", c.get("score", 0.0)),
             "rrf_score": c.get("score", 0.0),
+            "excerpt":   (c.get("text") or "")[:200].strip() or None,
         }
         for c in chunks[:5]
     ]
@@ -396,7 +410,7 @@ def stream(
         session_mem.append_message(prefix, "user",      question,    msg_id=f"{idempotency_key}:user")
         session_mem.append_message(prefix, "assistant", full_answer, msg_id=f"{idempotency_key}:asst")
     except Exception as _e:
-        print(f"[stream] Redis append failed (non-fatal): {_e}")
+        logger.warning("[stream] Redis append failed (non-fatal): %s", _e)
 
     try:
         store.log_turn(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
@@ -407,7 +421,7 @@ def stream(
                        idempotency_key=f"{idempotency_key}:asst",
                        sources=sources, confidence=confidence)
     except Exception as _e:
-        print(f"[stream] PG log_turn failed (non-fatal): {_e}")
+        logger.warning("[stream] PG log_turn failed (non-fatal): %s", _e)
 
     try:
         topic   = _extract_topic(question)
@@ -416,7 +430,7 @@ def stream(
                                   subject=topic, content=question, source_session=session_id,
                                   confidence=confidence, idempotency_key=f"topic:{fact_id}")
     except Exception as _e:
-        print(f"[stream] PG store_semantic_fact failed (non-fatal): {_e}")
+        logger.warning("[stream] PG store_semantic_fact failed (non-fatal): %s", _e)
 
     try:
         citation_summary = ", ".join(f"p{s.get('page')} {s.get('section','')}" for s in sources[:3])
@@ -427,13 +441,13 @@ def stream(
                         iteration_count=mid_state.get("iteration_count", 0),
                         duration_ms=duration, confidence=confidence, cache_hit=False)
     except Exception as _e:
-        print(f"[stream] PG log_query failed (non-fatal): {_e}")
+        logger.warning("[stream] PG log_query failed (non-fatal): %s", _e)
 
     try:
         if full_answer and confidence >= 0.4:
             semantic_cache.store(tenant_id, user_id, question, full_answer, confidence, sources=sources)
     except Exception as _e:
-        print(f"[stream] semantic_cache.store failed (non-fatal): {_e}")
+        logger.warning("[stream] semantic_cache.store failed (non-fatal): %s", _e)
 
     try:
         splunk.rag_query(tenant_id=tenant_id, user_id=user_id, session_id=session_id,
@@ -443,11 +457,11 @@ def stream(
                          iteration_count=mid_state.get("iteration_count", 0),
                          duration_ms=duration, source_count=len(sources))
     except Exception as _e:
-        print(f"[stream] Splunk rag_query failed (non-fatal): {_e}")
+        logger.warning("[stream] Splunk rag_query failed (non-fatal): %s", _e)
 
     total_tok    = sum(v.get("total", 0) for v in mid_state.get("stage_tokens", {}).values() if isinstance(v, dict))
     node_t       = mid_state.get("node_timings", {})
-    lat_trace    = {"_pipeline": _outer_timings if "_outer_timings" in dir() else {}, **node_t, "_total_ms": duration}
+    lat_trace    = {"_pipeline": {}, **node_t, "_total_ms": duration}
     yield {"type": "done", "sources": sources, "confidence": confidence,
            "duration_ms": duration, "cache_hit": False,
            "token_usage":    mid_state.get("stage_tokens", {}),

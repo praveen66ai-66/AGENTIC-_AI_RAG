@@ -4,10 +4,10 @@ from app.agents.graph.state import AgentState
 from app.memory import session as session_mem
 from app.observability import splunk
 from app.retrieval.reranker import rerank
-from app.retrieval.search import hybrid_search
+from app.retrieval.search import hybrid_search, section_lookup
 
-_FETCH_K          = 5    # reduced from 10 — fewer candidates = faster reranking
-_RERANK_K         = 3    # top 3 after rerank is enough for a finance Q&A pilot
+_FETCH_K          = 15   # wider candidate pool so tables ranked 6-15 reach the reranker
+_RERANK_K         = 5    # reranker is cheap; keep top 5 for richer generator context
 _RERANK_THRESHOLD = 0.4
 
 
@@ -40,6 +40,20 @@ def retriever_node(state: AgentState) -> dict:
         if chunk["text"] not in seen:
             seen.add(chunk["text"])
             structure.append(chunk)
+
+    # Section-body lookup: when a structure header matches well (score ≥ 0.3),
+    # fetch the body paragraphs under that section via a payload filter.
+    # This handles "paste the section title as the query" cases where the header
+    # is in finance_structure but the content is in finance_content.
+    _SECTION_SCORE_THRESHOLD = 0.3
+    for s_chunk in structure:
+        if s_chunk.get("score", 0.0) >= _SECTION_SCORE_THRESHOLD:
+            section_name = s_chunk.get("section") or s_chunk.get("text", "").strip()
+            for chunk in section_lookup(queries[0], section_name, top_k=6):
+                if chunk["text"] not in seen:
+                    seen.add(chunk["text"])
+                    candidates.append(chunk)
+
     _qdrant_ms = round((time.time() - _t) * 1000, 2)
 
     _t = time.time()

@@ -337,6 +337,27 @@ def print_dedup_guards(r: redis.Redis) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def flush_cache(r: redis.Redis) -> None:
+    divider("FLUSH -- semantic answer cache  (*:scache)")
+    keys, cursor = [], 0
+    while True:
+        cursor, batch = r.scan(cursor, match="*:scache", count=200)
+        keys.extend(batch)
+        if cursor == 0:
+            break
+
+    if not keys:
+        print("  No scache keys found — cache is already empty.")
+        return
+
+    for k in keys:
+        n = r.hlen(k)
+        print(f"  Deleting {k}  ({n} entries)")
+
+    deleted = r.delete(*keys)
+    print(f"\n  Deleted {deleted} key(s). Cache is now empty.")
+
+
 SECTION_MAP = {
     "sessions": print_sessions,
     "history":  print_history,
@@ -353,6 +374,22 @@ def main() -> None:
     args    = sys.argv[1:]
     target  = args[0].lower() if args else "all"
     limit   = int(args[1]) if len(args) > 1 else 5
+
+    if target == "flush":
+        print("=" * 80)
+        print("  Agentic AI RAG -- Redis Cache Flush")
+        print("=" * 80)
+        try:
+            r = connect()
+            r.ping()
+        except Exception as e:
+            print(f"\n  [!] Could not connect to Redis: {e}")
+            sys.exit(1)
+        print("  [ok] Connected\n")
+        flush_cache(r)
+        divider()
+        print("  Done.")
+        return
 
     print("=" * 80)
     print("  Agentic AI RAG -- Redis Inspection")

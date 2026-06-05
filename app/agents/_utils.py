@@ -21,9 +21,10 @@ def get_llm() -> Any:
     global _llm
     if _llm is None:
         primary = ChatGroq(
-            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
             api_key=os.getenv("GROQ_API_KEY"),
-            max_tokens=4096,
+            max_tokens=int(os.getenv("GROQ_MAX_TOKENS", "1024")),
+            reasoning_effort=os.getenv("GROQ_REASONING_EFFORT", "medium"),
         )
 
         # Retry up to 3 times on any transient Groq error before giving up / falling back

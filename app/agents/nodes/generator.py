@@ -170,6 +170,7 @@ def generator_node(state: AgentState) -> dict:
                 # rerank_score is what ordered the chunks — show it so [1] = highest relevance
                 "score":        c.get("rerank_score", c.get("score", 0.0)),
                 "rrf_score":    c.get("score", 0.0),
+                "excerpt":      (c.get("text") or "")[:200].strip() or None,
             }
             for c in chunks[:5]
         ]

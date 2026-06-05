@@ -1,6 +1,6 @@
-# Agentic AI RAG — Corporate Finance Intelligence Platform
+# Agentic AI RAG -- Corporate Finance Intelligence Platform
 
-> **Pilot Release v0.1.0** — Production-grade, agentic Retrieval-Augmented Generation system for large-scale corporate finance document analysis (1,000+ page PDF support).
+> **Pilot Release v0.1.0** -- Production-grade, agentic Retrieval-Augmented Generation system for large-scale corporate finance document analysis (1,000+ page PDF support).
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136-green?logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -14,9 +14,9 @@
 
 ## Overview
 
-**Agentic AI RAG** is an enterprise-ready Retrieval-Augmented Generation system purpose-built for corporate finance education and practice. It enables practitioners, analysts, and students to query massive financial documents — balance sheets, income statements, accounting standards, regulatory filings, and course materials — using natural language, with answers grounded strictly in the source material.
+**Agentic AI RAG** is an enterprise-ready Retrieval-Augmented Generation system purpose-built for corporate finance education and practice. It enables practitioners, analysts, and students to query massive financial documents -- balance sheets, income statements, accounting standards, regulatory filings, and course materials -- using natural language, with answers grounded strictly in the source material.
 
-The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orchestration, it plans, retrieves, reasons, and self-corrects across complex multi-step financial queries spanning hundreds of pages — with full guardrails, trajectory audit trails, and a layered memory architecture.
+The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orchestration, it plans, retrieves, reasons, and self-corrects across complex multi-step financial queries spanning hundreds of pages -- with full guardrails, trajectory audit trails, and a layered memory architecture.
 
 ### Core Use Case
 
@@ -24,7 +24,7 @@ The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orc
 - **Query:** *"What is the difference between FIFO and LIFO inventory valuation and how does each method affect net income during inflation?"*
 - **Output:** A cited, context-grounded answer with source page references and confidence score
 
-> **Note:** `CoreCourseFinancialAccounting.pdf` lives in `data/documents/`. Run `scripts/ingest.py` → `scripts/describe_images.py` → `scripts/build_index.py` in order to populate the Qdrant vector store before querying.
+> **Note:** `CoreCourseFinancialAccounting.pdf` lives in `data/documents/`. Run `scripts/ingest.py` -> `scripts/describe_images.py` -> `scripts/build_index.py` in order to populate the Qdrant vector store before querying.
 
 ---
 
@@ -40,7 +40,7 @@ The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orc
 │                      FastAPI Application Layer                        │
 │            /query    /ingest    /health    /sessions                  │
 │                          Middleware                                   │
-│                   (CORS · Auth · Rate Limit)                          │
+│                   (CORS | Auth | Rate Limit)                          │
 └──────────────────────────┬────────────────────────────────────────────┘
                            │
               ┌────────────┼────────────┐
@@ -81,9 +81,9 @@ The system goes beyond simple Q&A. Built on LangGraph's stateful multi-agent orc
            │  Docling Ingestion Pipeline
            ▼
   ┌────────────────┐
-  │  PDF → Parse   │
-  │  → Chunk       │
-  │  → Embed       │
+  │  PDF -> Parse   │
+  │  -> Chunk       │
+  │  -> Embed       │
   │  (1,000+ pgs)  │
   └────────────────┘
 ```
@@ -131,7 +131,7 @@ The system implements a three-tier memory model aligned to cognitive memory theo
 | **Episodic Memory** | PostgreSQL | Persistent | Full conversation history, session records, user interactions |
 | **Semantic Memory** | PostgreSQL + pgvector | Persistent | Extracted financial concepts, facts, entities from documents |
 
-> **Why this matters for finance:** Episodic memory enables the system to reason across multiple sessions — e.g., "Last week you asked about LIFO; here's how it relates to today's question on inventory turnover."
+> **Why this matters for finance:** Episodic memory enables the system to reason across multiple sessions -- e.g., "Last week you asked about LIFO; here's how it relates to today's question on inventory turnover."
 
 ---
 
@@ -167,7 +167,7 @@ trajectory record = {
 }
 ```
 
-> **Why trajectory is non-negotiable for finance:** Any corporate finance application must maintain an audit trail of how an answer was derived — for compliance, explainability, and trust.
+> **Why trajectory is non-negotiable for finance:** Any corporate finance application must maintain an audit trail of how an answer was derived -- for compliance, explainability, and trust.
 
 Stored in PostgreSQL (`db/schemas/`). Future: exportable to Splunk for enterprise log aggregation.
 
@@ -175,14 +175,14 @@ Stored in PostgreSQL (`db/schemas/`). Future: exportable to Splunk for enterpris
 
 ## Prompt Layer
 
-All prompts are stored as **YAML files** — no inline strings in code. The content inside each YAML file uses **XML + Markdown**:
+All prompts are stored as **YAML files** -- no inline strings in code. The content inside each YAML file uses **XML + Markdown**:
 
 - **YAML** = file container, version metadata, easy `yaml.safe_load()` in Python
 - **XML tags** = structural sections (`<role>`, `<context>`, `<constraints>`, `<output_format>`) for clear instruction boundaries
 - **Markdown** = human-readable formatting inside sections (headers, bullet lists, code blocks, tables)
 
 ```yaml
-# app/prompts/agents/planner.yml  — abbreviated example
+# app/prompts/agents/planner.yml  -- abbreviated example
 name: planner_system
 version: "1.0.0"
 
@@ -250,7 +250,7 @@ Agentic_AI_Rag/
 │   │   │   ├── state.py             # AgentState TypedDict (single source of truth for graph state)
 │   │   │   ├── builder.py           # StateGraph construction, node registration, compile()
 │   │   │   └── edges.py             # Conditional edge functions (route_after_reasoner)
-│   │   ├── nodes/                   # planner.py · retriever.py · reasoner.py · generator.py
+│   │   ├── nodes/                   # planner.py | retriever.py | reasoner.py | generator.py
 │   │   └── tools/                   # Agent tools: vector search, financial calculator
 │   │
 │   ├── guardrails/                  # Two-layer safety system
@@ -259,12 +259,12 @@ Agentic_AI_Rag/
 │   │   └── domain/                  # Finance-specific rules (GAAP, disclaimers)
 │   │
 │   ├── trajectory/                  # Agent step audit trail
-│   │                                # tracker.py · recorder.py · analyzer.py
+│   │                                # tracker.py | recorder.py | analyzer.py
 │   │
 │   ├── memory/                      # Three-tier memory model
-│   │   ├── working/                 # Redis — short-term conversation buffer (TTL)
-│   │   ├── episodic/                # PostgreSQL — session history, user interactions
-│   │   └── semantic/                # PostgreSQL + pgvector — extracted knowledge
+│   │   ├── working/                 # Redis -- short-term conversation buffer (TTL)
+│   │   ├── episodic/                # PostgreSQL -- session history, user interactions
+│   │   └── semantic/                # PostgreSQL + pgvector -- extracted knowledge
 │   │
 │   ├── pipeline/                    # Document processing pipeline
 │   │   ├── ingestion/               # Docling PDF loader, chunker, embedder
@@ -275,12 +275,12 @@ Agentic_AI_Rag/
 │   │   ├── relational/              # PostgreSQL client + Alembic integration
 │   │   └── cache/                   # Redis client
 │   │
-│   ├── prompts/                     # Versioned prompt layer (YAML files · XML+MD content)
-│   │   ├── agents/                  # planner.yml · retriever.yml · reasoner.yml · generator.yml
-│   │   ├── guardrails/              # input.yml · output.yml · domain.yml
-│   │   ├── few_shots/               # finance_qa.yml — domain few-shot examples in YAML
+│   ├── prompts/                     # Versioned prompt layer (YAML files | XML+MD content)
+│   │   ├── agents/                  # planner.yml | retriever.yml | reasoner.yml | generator.yml
+│   │   ├── guardrails/              # input.yml | output.yml | domain.yml
+│   │   ├── few_shots/               # finance_qa.yml -- domain few-shot examples in YAML
 │   │   ├── templates/               # reusable query/response YAML templates
-│   │   └── registry/                # versions.yml — active prompt version pointer per agent
+│   │   └── registry/                # versions.yml -- active prompt version pointer per agent
 │   │
 │   ├── observability/               # Monitoring and tracing
 │   │   ├── logging/                 # Structured JSON logging (Splunk HEC-ready)
@@ -312,9 +312,9 @@ Agentic_AI_Rag/
 │   └── e2e/
 │
 ├── scripts/                         # Pipeline scripts (run in order)
-│   ├── ingest.py                    # Step 1: PDF → text/table/image chunks
-│   ├── describe_images.py           # Step 2: Image → LLM text descriptions (Llama 4 Scout)
-│   └── build_index.py               # Step 3: Chunk → embed → upsert to Qdrant
+│   ├── ingest.py                    # Step 1: PDF -> text/table/image chunks
+│   ├── describe_images.py           # Step 2: Image -> LLM text descriptions (Llama 4 Scout)
+│   └── build_index.py               # Step 3: Chunk -> embed -> upsert to Qdrant
 │
 └── docker/                          # Container configs: App + Redis + PostgreSQL
 ```
@@ -327,8 +327,8 @@ Agentic_AI_Rag/
 |---|---|---|
 | Python | 3.12+ | Pinned via `.python-version` |
 | uv | Latest | `pip install uv` |
-| Groq API Key | — | For llama-3.3-70b-versatile (primary LLM) |
-| Qdrant Cloud account | — | `QDRANT_URL` + `QDRANT_API_KEY` (free tier available) |
+| Groq API Key | -- | For llama-3.3-70b-versatile (primary LLM) |
+| Qdrant Cloud account | -- | `QDRANT_URL` + `QDRANT_API_KEY` (free tier available) |
 | Redis | 7.0+ | Working memory (Docker recommended) |
 | PostgreSQL | 15+ | Episodic memory, trajectory |
 | Git | Any | |
@@ -355,13 +355,13 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Edit .env — fill in GROQ_API_KEY, QDRANT_URL, QDRANT_API_KEY at minimum
+# Edit .env -- fill in GROQ_API_KEY, QDRANT_URL, QDRANT_API_KEY at minimum
 ```
 
 ### 4. Start Services (Docker)
 
 ```bash
-# Redis + PostgreSQL  (Qdrant is cloud-hosted — no local container needed)
+# Redis + PostgreSQL  (Qdrant is cloud-hosted -- no local container needed)
 docker compose -f docker/docker-compose.yml up -d
 ```
 
@@ -382,17 +382,17 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GROQ_API_KEY` | **Yes** | — | Groq API key (primary LLM) |
+| `GROQ_API_KEY` | **Yes** | -- | Groq API key (primary LLM) |
 | `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq chat model |
-| `QDRANT_URL` | **Yes** | — | Qdrant Cloud cluster URL |
-| `QDRANT_API_KEY` | **Yes** | — | Qdrant Cloud API key |
-| `GOOGLE_API_KEY` | No | — | Google API key for Gemini 1.5 Flash fallback LLM |
+| `QDRANT_URL` | **Yes** | -- | Qdrant Cloud cluster URL |
+| `QDRANT_API_KEY` | **Yes** | -- | Qdrant Cloud API key |
+| `GOOGLE_API_KEY` | No | -- | Google API key for Gemini 1.5 Flash fallback LLM |
 | `GOOGLE_MODEL` | No | `gemini-2.0-flash` | Gemini model (fallback) |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection string |
 | `POSTGRES_HOST` | No | `localhost` | PostgreSQL host |
 | `POSTGRES_PORT` | No | `5432` | PostgreSQL port |
 | `POSTGRES_USER` | No | `postgres` | PostgreSQL user |
-| `POSTGRES_PASSWORD` | No | — | PostgreSQL password |
+| `POSTGRES_PASSWORD` | No | -- | PostgreSQL password |
 | `POSTGRES_DB` | No | `postgres` | PostgreSQL database |
 | `PDF_SOURCE_DIR` | No | `./data/documents` | Source PDF directory for ingestion |
 | `CHUNK_SIZE` | No | `1000` | Characters per document chunk |
@@ -404,14 +404,14 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 | `PORT` | No | `8000` | API server port |
 | `ENV` | No | `development` | `development` or `production` |
 | `LANGCHAIN_TRACING_V2` | No | `false` | Enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | No | — | LangSmith API key |
-| `LANGCHAIN_PROJECT` | No | — | LangSmith project name |
-| `LANGFUSE_SECRET_KEY` | No | — | Langfuse secret key |
-| `LANGFUSE_PUBLIC_KEY` | No | — | Langfuse public key |
+| `LANGCHAIN_API_KEY` | No | -- | LangSmith API key |
+| `LANGCHAIN_PROJECT` | No | -- | LangSmith project name |
+| `LANGFUSE_SECRET_KEY` | No | -- | Langfuse secret key |
+| `LANGFUSE_PUBLIC_KEY` | No | -- | Langfuse public key |
 | `LANGFUSE_HOST` | No | `https://cloud.langfuse.com` | Langfuse endpoint |
-| `SPLUNK_HOST` | No | — | Splunk HEC hostname |
+| `SPLUNK_HOST` | No | -- | Splunk HEC hostname |
 | `SPLUNK_HEC_PORT` | No | `8088` | Splunk HEC port |
-| `SPLUNK_HEC_TOKEN` | No | — | Splunk HEC token |
+| `SPLUNK_HEC_TOKEN` | No | -- | Splunk HEC token |
 | `SPLUNK_VERIFY_SSL` | No | `true` | Verify Splunk TLS certificate |
 
 ---
@@ -470,7 +470,7 @@ Content-Type: application/json
 
 | Metric | Target |
 |---|---|
-| PDF ingestion — 1,000 pages | < 10 minutes |
+| PDF ingestion -- 1,000 pages | < 10 minutes |
 | Query latency P95 | < 5 seconds |
 | Retrieval relevance Top-5 | > 85% |
 | Concurrent sessions | 10+ |
@@ -483,9 +483,9 @@ Content-Type: application/json
 ### Implemented
 - [x] FastAPI + LangGraph + LangChain + Groq scaffold with full folder architecture
 - [x] Reproducible environment via `uv` + lock file
-- [x] Docling PDF ingestion pipeline: parse → chunk → embed → upsert to Qdrant (3-script pipeline)
+- [x] Docling PDF ingestion pipeline: parse -> chunk -> embed -> upsert to Qdrant (3-script pipeline)
 - [x] Qdrant Cloud hybrid vector store: dense (BAAI/bge-base-en-v1.5) + sparse (BM25) with RRF fusion
-- [x] Cross-encoder reranker (ms-marco-MiniLM-L-2-v2) — precision pass after retrieval
+- [x] Cross-encoder reranker (ms-marco-MiniLM-L-2-v2) -- precision pass after retrieval
 - [x] LangGraph state machine: planner, retriever, reasoner, generator nodes
 - [x] Input + output guardrails (prompt injection, domain check, hallucination detection)
 - [x] Redis working memory (conversation buffer, TTL-based)
@@ -551,8 +551,8 @@ uv run mypy app/
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+MIT License -- see [LICENSE](LICENSE).
 
 ---
 
-*Powered by LangGraph · LangChain · Docling · Groq · Qdrant · FastEmbed · FastAPI · Redis · PostgreSQL · Python 3.12*
+*Powered by LangGraph | LangChain | Docling | Groq | Qdrant | FastEmbed | FastAPI | Redis | PostgreSQL | Python 3.12*
